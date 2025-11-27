@@ -1,0 +1,20 @@
+# Node / Vite build output
+node_modules/
+dist/
+.vite/
+
+# Logs & diagnostics
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+
+# Env / local config
+.env
+.env.*
+!.env.examplegi
