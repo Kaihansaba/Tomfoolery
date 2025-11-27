@@ -589,7 +589,14 @@ export default function TrafficSimulationApp() {
     const view = viewRef.current;
     const backdropCtx = backdropContextRef.current || undefined;
     if (runtime && canvas && view) {
-      drawScene(canvas, runtime.engine, view, backdropCtx);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropCtx,
+        spawnPointsRef.current,
+        runtime.network
+      );
     }
   }, []);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
@@ -669,7 +676,14 @@ export default function TrafficSimulationApp() {
     const canvas = canvasRef.current;
     const view = viewRef.current;
     if (runtime && canvas && view) {
-      drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     }
   }, [spawnPoints]);
 
@@ -700,7 +714,14 @@ export default function TrafficSimulationApp() {
         } else {
           viewRef.current = computeView(runtime.network, canvas);
         }
-        drawScene(canvas, runtime.engine, viewRef.current, backdropContextRef.current || undefined);
+        drawScene(
+          canvas,
+          runtime.engine,
+          viewRef.current,
+          backdropContextRef.current || undefined,
+          spawnPointsRef.current,
+          runtime.network
+        );
       }
     };
 
@@ -727,7 +748,14 @@ export default function TrafficSimulationApp() {
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.25);
       lastFrameRef.current = timestamp;
       runtime.engine.step(delta * timeScale);
-      drawScene(canvas, runtime.engine, view, backdropContextRef.current || undefined);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
 
       hudAccumulatorRef.current += delta;
       const drawDelta = timestamp - lastDrawRef.current;
@@ -801,7 +829,14 @@ export default function TrafficSimulationApp() {
         };
       }
 
-      drawScene(canvas, runtime.engine, viewRef.current, backdropContextRef.current || undefined);
+      drawScene(
+        canvas,
+        runtime.engine,
+        viewRef.current,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     };
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -842,7 +877,14 @@ export default function TrafficSimulationApp() {
         offsetX: start.offsetX + (event.clientX - start.x),
         offsetY: start.offsetY + (event.clientY - start.y),
       };
-      drawScene(canvasEl, runtime.engine, viewRef.current, backdropContextRef.current || undefined);
+      drawScene(
+        canvasEl,
+        runtime.engine,
+        viewRef.current,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     };
 
     const endPan = (event: PointerEvent) => {
