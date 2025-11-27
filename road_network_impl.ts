@@ -14,6 +14,8 @@ import {
   Vector2D,
   NetworkJSON,
   ISpatialIndex,
+  GeoReference,
+  BackdropConfig,
 } from './traffic_sim_interfaces';
 
 export class RoadNetworkImpl implements RoadNetwork {
@@ -22,6 +24,8 @@ export class RoadNetworkImpl implements RoadNetwork {
   lanes: Map<LaneID, Lane> = new Map();
   intersections: Map<NodeID, Intersection> = new Map();
   spatialIndex?: ISpatialIndex;
+  geoReference?: GeoReference;
+  backdrop?: BackdropConfig;
   
   // =========================================================================
   // BASIC ACCESSORS
@@ -520,16 +524,39 @@ export class RoadNetworkImpl implements RoadNetwork {
 
     const originLat = (minY + maxY) / 2;
     const originLon = (minX + maxX) / 2;
+    const originLatRad = (originLat * Math.PI) / 180;
+    const originLonRad = (originLon * Math.PI) / 180;
     const metersPerDegLat = 111320;
-    const metersPerDegLon = Math.cos((originLat * Math.PI) / 180) * 111320;
+    const metersPerDegLon = Math.cos(originLatRad) * 111320;
 
-    const project = (pt: { x: number; y: number }) => ({
-      x: (pt.x - originLon) * metersPerDegLon,
-      y: (pt.y - originLat) * metersPerDegLat,
-    });
+    // Web Mercator projection centered at origin
+    const R = 6378137;
+    const originMercatorX = R * originLonRad;
+    const originMercatorY = R * Math.log(Math.tan(Math.PI / 4 + originLatRad / 2));
+
+    const project = (pt: { x: number; y: number }) => {
+      const latRad = (pt.y * Math.PI) / 180;
+      const lonRad = (pt.x * Math.PI) / 180;
+      const mx = R * lonRad - originMercatorX;
+      const my = R * Math.log(Math.tan(Math.PI / 4 + latRad / 2)) - originMercatorY;
+      return { x: mx, y: -my }; // flip Y so north points up in world space
+    };
+
+    const geoReference: GeoReference = {
+      originLat,
+      originLon,
+      metersPerDegLat,
+      metersPerDegLon,
+      projected: true,
+      projection: 'mercator',
+      originMercatorX,
+      originMercatorY,
+      flipY: true,
+    };
 
     return {
       ...json,
+      geoReference,
       nodes: json.nodes.map(node => {
         const projected = project({ x: node.x, y: node.y });
         return { ...node, x: projected.x, y: projected.y };
@@ -544,6 +571,8 @@ export class RoadNetworkImpl implements RoadNetwork {
   static fromJSON(json: NetworkJSON): RoadNetworkImpl {
     const normalized = RoadNetworkImpl.normalizeCoordinates(json);
     const network = new RoadNetworkImpl();
+    network.geoReference = normalized.geoReference;
+    network.backdrop = normalized.backdrop;
     
     // Add nodes
     for (const nodeData of normalized.nodes) {
