@@ -479,9 +479,11 @@ function drawBackdrop(
             tileCache.set(key, image);
             pending.delete(key);
             requestRedraw();
+            return image;
           })
-          .catch(() => {
+          .catch(err => {
             pending.delete(key);
+            throw err;
           });
         pending.set(key, promise);
       }
