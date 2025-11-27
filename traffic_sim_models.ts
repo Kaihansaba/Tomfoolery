@@ -259,16 +259,27 @@ export class MOBILModel implements ILaneChangeModel {
     newFollower: VehicleState | undefined
   ): boolean {
     const params = DEFAULT_VEHICLE_TYPES[vehicle.type]?.driver;
-    const minGap = 2.0;
+    const followerParams = newFollower
+      ? DEFAULT_VEHICLE_TYPES[newFollower.type]?.driver
+      : undefined;
+
+    const desiredAhead =
+      (params?.minSpacing ?? 2) + Math.max(4, vehicle.velocity * (params?.timeHeadway ?? 1.2));
+    const desiredBehind =
+      (followerParams?.minSpacing ?? 2) +
+      Math.max(3, (newFollower?.velocity ?? 0) * (followerParams?.timeHeadway ?? 1.5));
 
     if (newLeader) {
       const gapAhead = newLeader.lanePosition - vehicle.lanePosition;
-      if (gapAhead < minGap) return false;
+      if (gapAhead < desiredAhead) return false;
     }
 
     if (newFollower) {
+      const gapBehind = vehicle.lanePosition - newFollower.lanePosition;
+      if (gapBehind < desiredBehind) return false;
+
       const followerAccel = this.estimateAcceleration(newFollower, vehicle, targetLane);
-      const safe = params?.safeDecel ?? this.safeDecel;
+      const safe = followerParams?.safeDecel ?? params?.safeDecel ?? this.safeDecel;
       if (followerAccel < -safe) return false;
     }
 
