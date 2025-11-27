@@ -30,6 +30,13 @@ interface ViewTransform {
   offsetY: number;
 }
 
+interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
 interface HudState {
   time: number;
   vehicles: number;
@@ -89,6 +96,20 @@ function worldToScreen(view: ViewTransform, point: Vector2D): Vector2D {
   };
 }
 
+function getViewBounds(view: ViewTransform, canvas: HTMLCanvasElement, marginPx = 80): Bounds {
+  const marginWorld = marginPx / view.scale;
+  return {
+    minX: (0 - view.offsetX) / view.scale - marginWorld,
+    maxX: (canvas.width - view.offsetX) / view.scale + marginWorld,
+    minY: (0 - view.offsetY) / view.scale - marginWorld,
+    maxY: (canvas.height - view.offsetY) / view.scale + marginWorld,
+  };
+}
+
+function boundsIntersect(a: Bounds, b: Bounds): boolean {
+  return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
 function computeView(network: RoadNetworkImpl, canvas: HTMLCanvasElement): ViewTransform {
   let minX = Infinity;
   let minY = Infinity;
@@ -122,6 +143,36 @@ function computeView(network: RoadNetworkImpl, canvas: HTMLCanvasElement): ViewT
     offsetX: padding - minX * scale,
     offsetY: padding - minY * scale,
   };
+}
+
+const laneBoundsCache = new WeakMap<Lane, Bounds>();
+
+function getLaneBounds(lane: Lane): Bounds {
+  const cached = laneBoundsCache.get(lane);
+  if (cached) return cached;
+
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+
+  for (const pt of lane.centerline) {
+    minX = Math.min(minX, pt.x);
+    minY = Math.min(minY, pt.y);
+    maxX = Math.max(maxX, pt.x);
+    maxY = Math.max(maxY, pt.y);
+  }
+
+  const halfWidth = lane.width * 0.5 + 2; // include stroke and a small buffer
+  const bounds: Bounds = {
+    minX: minX - halfWidth,
+    minY: minY - halfWidth,
+    maxX: maxX + halfWidth,
+    maxY: maxY + halfWidth,
+  };
+
+  laneBoundsCache.set(lane, bounds);
+  return bounds;
 }
 
 function pickCategory(): VehicleCategory {
@@ -251,16 +302,27 @@ function drawScene(
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
+  const visibleBounds = getViewBounds(view, canvas, 120);
+
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#0a0f1f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   let laneIndex = 0;
   for (const lane of engine.network.lanes.values()) {
+    const laneBounds = getLaneBounds(lane);
+    if (!boundsIntersect(laneBounds, visibleBounds)) continue;
     drawLane(ctx, view, lane, laneIndex++);
   }
 
   for (const vehicle of engine.vehicles.values()) {
+    const vehicleBounds: Bounds = {
+      minX: vehicle.position.x - 6,
+      maxX: vehicle.position.x + 6,
+      minY: vehicle.position.y - 6,
+      maxY: vehicle.position.y + 6,
+    };
+    if (!boundsIntersect(vehicleBounds, visibleBounds)) continue;
     drawVehicle(ctx, view, vehicle);
   }
 }
