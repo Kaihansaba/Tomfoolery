@@ -272,11 +272,17 @@ export default function TrafficSimulationApp() {
     engine: TrafficSimulationEngine;
     network: RoadNetworkImpl;
   } | null>(null);
+  const hasInitializedRef = useRef(false);
+  const lastInitSeedRef = useRef(true); // remember whether last init seeded vehicles
   const viewRef = useRef<ViewTransform | null>(null);
   const rafRef = useRef<number>();
   const lastFrameRef = useRef<number>(0);
   const lastDrawRef = useRef<number>(0);
   const hudAccumulatorRef = useRef<number>(0);
+  const isPanningRef = useRef(false);
+  const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(
+    null
+  );
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
   const [isRunning, setIsRunning] = useState(true);
@@ -289,9 +295,11 @@ export default function TrafficSimulationApp() {
   });
   const [showHud, setShowHud] = useState(true);
 
-  const initialize = () => {
+  const initialize = (options?: { seedVehicles?: boolean }) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
     const networkJSON = networks[scenario];
     const network = RoadNetworkImpl.fromJSON(networkJSON);
@@ -308,13 +316,16 @@ export default function TrafficSimulationApp() {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
     engine.setLaneChangeModel(new MOBILModel());
-    seedVehicles(engine, scenario);
+    if (shouldSeedVehicles) {
+      seedVehicles(engine, scenario);
+    }
 
     runtimeRef.current = { engine, network };
     viewRef.current = computeView(network, canvas);
     lastFrameRef.current = performance.now();
     lastDrawRef.current = performance.now();
     hudAccumulatorRef.current = 0;
+    lastInitSeedRef.current = shouldSeedVehicles;
 
     drawScene(canvas, engine, viewRef.current);
     setHud({
@@ -334,7 +345,9 @@ export default function TrafficSimulationApp() {
 
   useEffect(() => {
     if (!canvasReady) return;
-    initialize();
+    const shouldSeed = hasInitializedRef.current ? false : true;
+    initialize({ seedVehicles: shouldSeed });
+    hasInitializedRef.current = true;
   }, [canvasReady, scenario]);
 
   useEffect(() => {
@@ -432,30 +445,106 @@ export default function TrafficSimulationApp() {
       if (!runtime || !view) return;
       event.preventDefault();
 
-      const rect = canvas.getBoundingClientRect();
-      const cursor = {
-        x: event.clientX - rect.left,
-        y: event.clientY - rect.top,
-      };
-      const worldBefore = {
-        x: (cursor.x - view.offsetX) / view.scale,
-        y: (cursor.y - view.offsetY) / view.scale,
-      };
+      const absDeltaY = Math.abs(event.deltaY);
+      const absDeltaX = Math.abs(event.deltaX);
+      const isTrackpadLike =
+        event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && absDeltaX < 50 && absDeltaY < 50;
+      const wantsZoom = event.ctrlKey || event.metaKey || (!isTrackpadLike && absDeltaY > absDeltaX);
 
-      const zoomFactor = Math.exp(-event.deltaY * 0.001);
-      const newScale = clamp(view.scale * zoomFactor, MIN_ZOOM, MAX_ZOOM);
+      if (wantsZoom) {
+        const rect = canvas.getBoundingClientRect();
+        const cursor = {
+          x: event.clientX - rect.left,
+          y: event.clientY - rect.top,
+        };
+        const worldBefore = {
+          x: (cursor.x - view.offsetX) / view.scale,
+          y: (cursor.y - view.offsetY) / view.scale,
+        };
 
-      viewRef.current = {
-        scale: newScale,
-        offsetX: cursor.x - worldBefore.x * newScale,
-        offsetY: cursor.y - worldBefore.y * newScale,
-      };
+        const zoomFactor = Math.exp(-event.deltaY * 0.001);
+        const newScale = clamp(view.scale * zoomFactor, MIN_ZOOM, MAX_ZOOM);
+
+        viewRef.current = {
+          scale: newScale,
+          offsetX: cursor.x - worldBefore.x * newScale,
+          offsetY: cursor.y - worldBefore.y * newScale,
+        };
+      } else {
+        viewRef.current = {
+          ...view,
+          offsetX: view.offsetX - event.deltaX,
+          offsetY: view.offsetY - event.deltaY,
+        };
+      }
 
       drawScene(canvas, runtime.engine, viewRef.current);
     };
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
+  }, [canvasReady]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.style.cursor = 'grab';
+
+    const beginPan = (event: PointerEvent) => {
+      if (event.button !== 0 && event.button !== 1) return;
+      const view = viewRef.current;
+      if (!view) return;
+      isPanningRef.current = true;
+      panStartRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        offsetX: view.offsetX,
+        offsetY: view.offsetY,
+      };
+      canvas.setPointerCapture(event.pointerId);
+      canvas.style.cursor = 'grabbing';
+    };
+
+    const movePan = (event: PointerEvent) => {
+      if (!isPanningRef.current) return;
+      const start = panStartRef.current;
+      const view = viewRef.current;
+      const runtime = runtimeRef.current;
+      const canvasEl = canvasRef.current;
+      if (!start || !view || !runtime || !canvasEl) return;
+
+      viewRef.current = {
+        ...view,
+        offsetX: start.offsetX + (event.clientX - start.x),
+        offsetY: start.offsetY + (event.clientY - start.y),
+      };
+      drawScene(canvasEl, runtime.engine, viewRef.current);
+    };
+
+    const endPan = (event: PointerEvent) => {
+      if (!isPanningRef.current) return;
+      isPanningRef.current = false;
+      panStartRef.current = null;
+      if (canvas.hasPointerCapture(event.pointerId)) {
+        canvas.releasePointerCapture(event.pointerId);
+      }
+      canvas.style.cursor = 'grab';
+    };
+
+    canvas.addEventListener('pointerdown', beginPan);
+    canvas.addEventListener('pointermove', movePan);
+    canvas.addEventListener('pointerup', endPan);
+    canvas.addEventListener('pointerleave', endPan);
+    canvas.addEventListener('pointercancel', endPan);
+
+    return () => {
+      canvas.style.cursor = 'default';
+      canvas.removeEventListener('pointerdown', beginPan);
+      canvas.removeEventListener('pointermove', movePan);
+      canvas.removeEventListener('pointerup', endPan);
+      canvas.removeEventListener('pointerleave', endPan);
+      canvas.removeEventListener('pointercancel', endPan);
+    };
   }, [canvasReady]);
 
   const handleAddVehicle = () => {
@@ -484,7 +573,7 @@ export default function TrafficSimulationApp() {
 
   const handleReset = () => {
     setIsRunning(false);
-    initialize();
+    initialize({ seedVehicles: lastInitSeedRef.current });
     setIsRunning(true);
   };
 
