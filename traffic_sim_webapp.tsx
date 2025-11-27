@@ -13,8 +13,15 @@ import {
   Vector2D,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
+import heilbronnPerchance from './heilbronnperchance.json';
+import testperchance from './testperchance.json';
 
-type ScenarioKey = keyof typeof exampleNetworks;
+const networks = {
+  ...exampleNetworks,
+  heilbronn_perchance: heilbronnPerchance as NetworkJSON,
+} satisfies Record<string, NetworkJSON>;
+
+type ScenarioKey = keyof typeof networks;
 
 interface ViewTransform {
   scale: number;
@@ -29,7 +36,6 @@ interface HudState {
   fps: number;
 }
 
-const networks = exampleNetworks as Record<string, NetworkJSON>;
 let vehicleCounter = 0;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3.0;
@@ -508,6 +514,8 @@ export default function TrafficSimulationApp() {
             <option value="simple_highway">Highway with ramps</option>
             <option value="urban_intersection">Signalized intersection</option>
             <option value="roundabout">Four-arm roundabout</option>
+            <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+            <option value="test_perchance">Test Perchance (full)</option>
           </select>
         </div>
 
