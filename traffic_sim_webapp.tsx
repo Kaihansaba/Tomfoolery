@@ -19,6 +19,7 @@ import testperchance from './testperchance.json';
 const networks = {
   ...exampleNetworks,
   heilbronn_perchance: heilbronnPerchance as NetworkJSON,
+  test_perchance: testperchance as NetworkJSON,
 } satisfies Record<string, NetworkJSON>;
 
 type ScenarioKey = keyof typeof networks;
@@ -39,6 +40,10 @@ interface HudState {
 let vehicleCounter = 0;
 const MIN_ZOOM = 0.3;
 const MAX_ZOOM = 3.0;
+
+function clamp(val: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, val));
+}
 
 function distance(a: Vector2D, b: Vector2D): number {
   const dx = b.x - a.x;
@@ -185,9 +190,10 @@ function drawLane(
   index: number
 ): void {
   const coords = lane.centerline.map(pt => worldToScreen(view, pt));
+  const laneWidth = clamp(lane.width * view.scale, 1, 12);
 
   ctx.strokeStyle = index % 2 === 0 ? '#394d6d' : '#2f3d56';
-  ctx.lineWidth = Math.max(1, lane.width * view.scale);
+  ctx.lineWidth = laneWidth;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
@@ -215,8 +221,8 @@ function drawVehicle(
   vehicle: VehicleState
 ): void {
   const base = DEFAULT_VEHICLE_TYPES[vehicle.type];
-  const width = Math.max(3, base.physical.width * view.scale);
-  const length = Math.max(6, base.physical.length * view.scale);
+  const width = clamp(base.physical.width * view.scale, 3, 14);
+  const length = clamp(base.physical.length * view.scale, 6, 32);
   const pos = worldToScreen(view, vehicle.position);
 
   ctx.save();
@@ -419,8 +425,6 @@ export default function TrafficSimulationApp() {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const clamp = (val: number, min: number, max: number) => Math.min(max, Math.max(min, val));
 
     const handleWheel = (event: WheelEvent) => {
       const runtime = runtimeRef.current;

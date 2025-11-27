@@ -484,12 +484,69 @@ export class RoadNetworkImpl implements RoadNetwork {
       })),
     };
   }
-  
+
+  // Convert lat/lon style networks into a local meter-based frame to keep rendering scales stable.
+  private static normalizeCoordinates(json: NetworkJSON): NetworkJSON {
+    if (!json.nodes || json.nodes.length === 0) {
+      return json;
+    }
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+
+    for (const node of json.nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x);
+      maxY = Math.max(maxY, node.y);
+    }
+
+    const width = maxX - minX;
+    const height = maxY - minY;
+
+    const looksLikeLatLon =
+      minX >= -180 &&
+      maxX <= 180 &&
+      minY >= -90 &&
+      maxY <= 90 &&
+      width < 5 &&
+      height < 5;
+
+    if (!looksLikeLatLon) {
+      return json;
+    }
+
+    const originLat = (minY + maxY) / 2;
+    const originLon = (minX + maxX) / 2;
+    const metersPerDegLat = 111320;
+    const metersPerDegLon = Math.cos((originLat * Math.PI) / 180) * 111320;
+
+    const project = (pt: { x: number; y: number }) => ({
+      x: (pt.x - originLon) * metersPerDegLon,
+      y: (pt.y - originLat) * metersPerDegLat,
+    });
+
+    return {
+      ...json,
+      nodes: json.nodes.map(node => {
+        const projected = project({ x: node.x, y: node.y });
+        return { ...node, x: projected.x, y: projected.y };
+      }),
+      edges: json.edges.map(edge => ({
+        ...edge,
+        geometry: (edge.geometry || []).map(pt => project(pt)),
+      })),
+    };
+  }
+
   static fromJSON(json: NetworkJSON): RoadNetworkImpl {
+    const normalized = RoadNetworkImpl.normalizeCoordinates(json);
     const network = new RoadNetworkImpl();
     
     // Add nodes
-    for (const nodeData of json.nodes) {
+    for (const nodeData of normalized.nodes) {
       const node: Node = {
         id: nodeData.id,
         position: { x: nodeData.x, y: nodeData.y },
@@ -502,7 +559,7 @@ export class RoadNetworkImpl implements RoadNetwork {
     }
     
     // Add edges
-    for (const edgeData of json.edges) {
+    for (const edgeData of normalized.edges) {
       const edge: Edge = {
         id: edgeData.id,
         fromNode: edgeData.from,
@@ -536,8 +593,8 @@ export class RoadNetworkImpl implements RoadNetwork {
     }
     
     // Add intersections
-    if (json.intersections) {
-      for (const intData of json.intersections) {
+    if (normalized.intersections) {
+      for (const intData of normalized.intersections) {
         const intersection: Intersection = {
           nodeId: intData.nodeId,
           type: intData.type as any,
