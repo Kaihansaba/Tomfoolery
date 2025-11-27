@@ -376,8 +376,8 @@ export default function TrafficSimulationApp() {
   const viewRef = useRef<ViewTransform | null>(null);
   const rafRef = useRef<number>();
   const lastFrameRef = useRef<number>(0);
-  const lastDrawRef = useRef<number>(0);
   const hudAccumulatorRef = useRef<number>(0);
+  const frameCountRef = useRef<number>(0);
   const isPanningRef = useRef(false);
   const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(
     null
@@ -429,8 +429,8 @@ export default function TrafficSimulationApp() {
     runtimeRef.current = { engine, network };
     viewRef.current = computeView(network, canvas);
     lastFrameRef.current = performance.now();
-    lastDrawRef.current = performance.now();
     hudAccumulatorRef.current = 0;
+    frameCountRef.current = 0;
     lastInitSeedRef.current = shouldSeedVehicles;
 
     drawScene(canvas, engine, viewRef.current, spawnPointsRef.current, network);
@@ -523,23 +523,27 @@ export default function TrafficSimulationApp() {
       drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
 
       hudAccumulatorRef.current += delta;
-      const drawDelta = timestamp - lastDrawRef.current;
+      frameCountRef.current += 1;
       if (hudAccumulatorRef.current >= 0.25) {
         const vehicles = Array.from(runtime.engine.vehicles.values());
         const avgSpeed =
           vehicles.length > 0
             ? vehicles.reduce((sum, v) => sum + v.velocity, 0) / vehicles.length
             : 0;
+        const fps =
+          hudAccumulatorRef.current > 0
+            ? frameCountRef.current / hudAccumulatorRef.current
+            : 0;
 
         setHud({
           time: runtime.engine.currentTime,
           vehicles: vehicles.length,
           avgSpeed,
-          fps: drawDelta > 0 ? 1000 / drawDelta : 60,
+          fps,
         });
 
         hudAccumulatorRef.current = 0;
-        lastDrawRef.current = timestamp;
+        frameCountRef.current = 0;
       }
 
       rafRef.current = requestAnimationFrame(tick);
