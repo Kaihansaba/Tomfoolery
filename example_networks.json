@@ -1,0 +1,504 @@
+{
+  "simple_highway": {
+    "version": "1.0",
+    "metadata": {
+      "name": "Simple Highway Segment",
+      "description": "3-lane highway with on-ramp and off-ramp",
+      "author": "Traffic Simulation System",
+      "created": "2025-01-01"
+    },
+    "nodes": [
+      {
+        "id": "n1",
+        "x": 0,
+        "y": 0,
+        "type": "endpoint"
+      },
+      {
+        "id": "n2",
+        "x": 500,
+        "y": 0,
+        "type": "waypoint"
+      },
+      {
+        "id": "n3",
+        "x": 1000,
+        "y": 0,
+        "type": "waypoint"
+      },
+      {
+        "id": "n4",
+        "x": 1500,
+        "y": 0,
+        "type": "endpoint"
+      },
+      {
+        "id": "n5",
+        "x": 400,
+        "y": 150,
+        "type": "endpoint",
+        "properties": {
+          "description": "On-ramp entry"
+        }
+      },
+      {
+        "id": "n6",
+        "x": 1100,
+        "y": 150,
+        "type": "endpoint",
+        "properties": {
+          "description": "Off-ramp exit"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "e1",
+        "from": "n1",
+        "to": "n2",
+        "lanes": 3,
+        "speedLimit": 33.33,
+        "roadType": "highway",
+        "geometry": [
+          { "x": 0, "y": 0 },
+          { "x": 500, "y": 0 }
+        ]
+      },
+      {
+        "id": "e2",
+        "from": "n2",
+        "to": "n3",
+        "lanes": 3,
+        "speedLimit": 33.33,
+        "roadType": "highway",
+        "geometry": [
+          { "x": 500, "y": 0 },
+          { "x": 1000, "y": 0 }
+        ]
+      },
+      {
+        "id": "e3",
+        "from": "n3",
+        "to": "n4",
+        "lanes": 3,
+        "speedLimit": 33.33,
+        "roadType": "highway",
+        "geometry": [
+          { "x": 1000, "y": 0 },
+          { "x": 1500, "y": 0 }
+        ]
+      },
+      {
+        "id": "e4",
+        "from": "n5",
+        "to": "n2",
+        "lanes": 1,
+        "speedLimit": 22.22,
+        "roadType": "ramp",
+        "geometry": [
+          { "x": 400, "y": 150 },
+          { "x": 450, "y": 75 },
+          { "x": 500, "y": 0 }
+        ],
+        "properties": {
+          "rampType": "on-ramp"
+        }
+      },
+      {
+        "id": "e5",
+        "from": "n3",
+        "to": "n6",
+        "lanes": 1,
+        "speedLimit": 22.22,
+        "roadType": "ramp",
+        "geometry": [
+          { "x": 1000, "y": 0 },
+          { "x": 1050, "y": 75 },
+          { "x": 1100, "y": 150 }
+        ],
+        "properties": {
+          "rampType": "off-ramp"
+        }
+      }
+    ]
+  },
+
+  "urban_intersection": {
+    "version": "1.0",
+    "metadata": {
+      "name": "Four-Way Urban Intersection",
+      "description": "Signalized intersection with turn lanes",
+      "author": "Traffic Simulation System"
+    },
+    "nodes": [
+      {
+        "id": "center",
+        "x": 0,
+        "y": 0,
+        "type": "junction"
+      },
+      {
+        "id": "north",
+        "x": 0,
+        "y": 200,
+        "type": "endpoint"
+      },
+      {
+        "id": "south",
+        "x": 0,
+        "y": -200,
+        "type": "endpoint"
+      },
+      {
+        "id": "east",
+        "x": 200,
+        "y": 0,
+        "type": "endpoint"
+      },
+      {
+        "id": "west",
+        "x": -200,
+        "y": 0,
+        "type": "endpoint"
+      }
+    ],
+    "edges": [
+      {
+        "id": "north_to_center",
+        "from": "north",
+        "to": "center",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": 200 },
+          { "x": 0, "y": 0 }
+        ]
+      },
+      {
+        "id": "center_to_south",
+        "from": "center",
+        "to": "south",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": 0 },
+          { "x": 0, "y": -200 }
+        ]
+      },
+      {
+        "id": "south_to_center",
+        "from": "south",
+        "to": "center",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": -200 },
+          { "x": 0, "y": 0 }
+        ]
+      },
+      {
+        "id": "center_to_north",
+        "from": "center",
+        "to": "north",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": 0 },
+          { "x": 0, "y": 200 }
+        ]
+      },
+      {
+        "id": "east_to_center",
+        "from": "east",
+        "to": "center",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 200, "y": 0 },
+          { "x": 0, "y": 0 }
+        ]
+      },
+      {
+        "id": "center_to_west",
+        "from": "center",
+        "to": "west",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": 0 },
+          { "x": -200, "y": 0 }
+        ]
+      },
+      {
+        "id": "west_to_center",
+        "from": "west",
+        "to": "center",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": -200, "y": 0 },
+          { "x": 0, "y": 0 }
+        ]
+      },
+      {
+        "id": "center_to_east",
+        "from": "center",
+        "to": "east",
+        "lanes": 3,
+        "speedLimit": 13.89,
+        "roadType": "arterial",
+        "geometry": [
+          { "x": 0, "y": 0 },
+          { "x": 200, "y": 0 }
+        ]
+      }
+    ],
+    "intersections": [
+      {
+        "nodeId": "center",
+        "type": "signalized",
+        "signalPhases": [
+          {
+            "id": "phase1",
+            "duration": 30,
+            "greenLanes": [
+              "north_to_center_lane_0",
+              "north_to_center_lane_1",
+              "north_to_center_lane_2",
+              "south_to_center_lane_0",
+              "south_to_center_lane_1",
+              "south_to_center_lane_2"
+            ],
+            "yellowLanes": [],
+            "redLanes": [
+              "east_to_center_lane_0",
+              "east_to_center_lane_1",
+              "east_to_center_lane_2",
+              "west_to_center_lane_0",
+              "west_to_center_lane_1",
+              "west_to_center_lane_2"
+            ]
+          },
+          {
+            "id": "phase2",
+            "duration": 3,
+            "greenLanes": [],
+            "yellowLanes": [
+              "north_to_center_lane_0",
+              "north_to_center_lane_1",
+              "north_to_center_lane_2",
+              "south_to_center_lane_0",
+              "south_to_center_lane_1",
+              "south_to_center_lane_2"
+            ],
+            "redLanes": [
+              "east_to_center_lane_0",
+              "east_to_center_lane_1",
+              "east_to_center_lane_2",
+              "west_to_center_lane_0",
+              "west_to_center_lane_1",
+              "west_to_center_lane_2"
+            ]
+          },
+          {
+            "id": "phase3",
+            "duration": 30,
+            "greenLanes": [
+              "east_to_center_lane_0",
+              "east_to_center_lane_1",
+              "east_to_center_lane_2",
+              "west_to_center_lane_0",
+              "west_to_center_lane_1",
+              "west_to_center_lane_2"
+            ],
+            "yellowLanes": [],
+            "redLanes": [
+              "north_to_center_lane_0",
+              "north_to_center_lane_1",
+              "north_to_center_lane_2",
+              "south_to_center_lane_0",
+              "south_to_center_lane_1",
+              "south_to_center_lane_2"
+            ]
+          },
+          {
+            "id": "phase4",
+            "duration": 3,
+            "greenLanes": [],
+            "yellowLanes": [
+              "east_to_center_lane_0",
+              "east_to_center_lane_1",
+              "east_to_center_lane_2",
+              "west_to_center_lane_0",
+              "west_to_center_lane_1",
+              "west_to_center_lane_2"
+            ],
+            "redLanes": [
+              "north_to_center_lane_0",
+              "north_to_center_lane_1",
+              "north_to_center_lane_2",
+              "south_to_center_lane_0",
+              "south_to_center_lane_1",
+              "south_to_center_lane_2"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+
+  "roundabout": {
+    "version": "1.0",
+    "metadata": {
+      "name": "Four-Entry Roundabout",
+      "description": "Modern roundabout with four approaches"
+    },
+    "nodes": [
+      {
+        "id": "center",
+        "x": 0,
+        "y": 0,
+        "type": "junction"
+      },
+      {
+        "id": "circle_n",
+        "x": 0,
+        "y": 30,
+        "type": "waypoint"
+      },
+      {
+        "id": "circle_e",
+        "x": 30,
+        "y": 0,
+        "type": "waypoint"
+      },
+      {
+        "id": "circle_s",
+        "x": 0,
+        "y": -30,
+        "type": "waypoint"
+      },
+      {
+        "id": "circle_w",
+        "x": -30,
+        "y": 0,
+        "type": "waypoint"
+      },
+      {
+        "id": "north_entry",
+        "x": 0,
+        "y": 150,
+        "type": "endpoint"
+      },
+      {
+        "id": "east_entry",
+        "x": 150,
+        "y": 0,
+        "type": "endpoint"
+      },
+      {
+        "id": "south_entry",
+        "x": 0,
+        "y": -150,
+        "type": "endpoint"
+      },
+      {
+        "id": "west_entry",
+        "x": -150,
+        "y": 0,
+        "type": "endpoint"
+      }
+    ],
+    "edges": [
+      {
+        "id": "circle_n_to_e",
+        "from": "circle_n",
+        "to": "circle_e",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": 30 },
+          { "x": 21, "y": 21 },
+          { "x": 30, "y": 0 }
+        ]
+      },
+      {
+        "id": "circle_e_to_s",
+        "from": "circle_e",
+        "to": "circle_s",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 30, "y": 0 },
+          { "x": 21, "y": -21 },
+          { "x": 0, "y": -30 }
+        ]
+      },
+      {
+        "id": "circle_s_to_w",
+        "from": "circle_s",
+        "to": "circle_w",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": -30 },
+          { "x": -21, "y": -21 },
+          { "x": -30, "y": 0 }
+        ]
+      },
+      {
+        "id": "circle_w_to_n",
+        "from": "circle_w",
+        "to": "circle_n",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": -30, "y": 0 },
+          { "x": -21, "y": 21 },
+          { "x": 0, "y": 30 }
+        ]
+      },
+      {
+        "id": "north_entry_to_circle",
+        "from": "north_entry",
+        "to": "circle_n",
+        "lanes": 1,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": 150 },
+          { "x": 0, "y": 30 }
+        ]
+      },
+      {
+        "id": "circle_to_north_exit",
+        "from": "circle_n",
+        "to": "north_entry",
+        "lanes": 1,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": 30 },
+          { "x": 0, "y": 150 }
+        ]
+      }
+    ],
+    "intersections": [
+      {
+        "nodeId": "center",
+        "type": "roundabout"
+      }
+    ]
+  }
+}
