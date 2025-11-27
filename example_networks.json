@@ -367,30 +367,14 @@
         "y": 0,
         "type": "junction"
       },
-      {
-        "id": "circle_n",
-        "x": 0,
-        "y": 30,
-        "type": "waypoint"
-      },
-      {
-        "id": "circle_e",
-        "x": 30,
-        "y": 0,
-        "type": "waypoint"
-      },
-      {
-        "id": "circle_s",
-        "x": 0,
-        "y": -30,
-        "type": "waypoint"
-      },
-      {
-        "id": "circle_w",
-        "x": -30,
-        "y": 0,
-        "type": "waypoint"
-      },
+      { "id": "circle_n",  "x": 0,   "y": 40,  "type": "waypoint" },
+      { "id": "circle_ne", "x": 28,  "y": 28,  "type": "waypoint" },
+      { "id": "circle_e",  "x": 40,  "y": 0,   "type": "waypoint" },
+      { "id": "circle_se", "x": 28,  "y": -28, "type": "waypoint" },
+      { "id": "circle_s",  "x": 0,   "y": -40, "type": "waypoint" },
+      { "id": "circle_sw", "x": -28, "y": -28, "type": "waypoint" },
+      { "id": "circle_w",  "x": -40, "y": 0,   "type": "waypoint" },
+      { "id": "circle_nw", "x": -28, "y": 28,  "type": "waypoint" },
       {
         "id": "north_entry",
         "x": 0,
@@ -418,79 +402,211 @@
     ],
     "edges": [
       {
-        "id": "circle_n_to_e",
+        "id": "circle_n_to_ne",
         "from": "circle_n",
+        "to": "circle_ne",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": 40 },
+          { "x": 16, "y": 40 },
+          { "x": 28, "y": 28 }
+        ]
+      },
+      {
+        "id": "circle_ne_to_e",
+        "from": "circle_ne",
         "to": "circle_e",
         "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
-          { "x": 0, "y": 30 },
-          { "x": 21, "y": 21 },
-          { "x": 30, "y": 0 }
+          { "x": 28, "y": 28 },
+          { "x": 40, "y": 16 },
+          { "x": 40, "y": 0 }
         ]
       },
       {
-        "id": "circle_e_to_s",
+        "id": "circle_e_to_se",
         "from": "circle_e",
+        "to": "circle_se",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 40, "y": 0 },
+          { "x": 40, "y": -16 },
+          { "x": 28, "y": -28 }
+        ]
+      },
+      {
+        "id": "circle_se_to_s",
+        "from": "circle_se",
         "to": "circle_s",
         "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
-          { "x": 30, "y": 0 },
-          { "x": 21, "y": -21 },
-          { "x": 0, "y": -30 }
+          { "x": 28, "y": -28 },
+          { "x": 16, "y": -40 },
+          { "x": 0, "y": -40 }
         ]
       },
       {
-        "id": "circle_s_to_w",
+        "id": "circle_s_to_sw",
         "from": "circle_s",
+        "to": "circle_sw",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": -40 },
+          { "x": -16, "y": -40 },
+          { "x": -28, "y": -28 }
+        ]
+      },
+      {
+        "id": "circle_sw_to_w",
+        "from": "circle_sw",
         "to": "circle_w",
         "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
-          { "x": 0, "y": -30 },
-          { "x": -21, "y": -21 },
-          { "x": -30, "y": 0 }
+          { "x": -28, "y": -28 },
+          { "x": -40, "y": -16 },
+          { "x": -40, "y": 0 }
         ]
       },
       {
-        "id": "circle_w_to_n",
+        "id": "circle_w_to_nw",
         "from": "circle_w",
+        "to": "circle_nw",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": -40, "y": 0 },
+          { "x": -40, "y": 16 },
+          { "x": -28, "y": 28 }
+        ]
+      },
+      {
+        "id": "circle_nw_to_n",
+        "from": "circle_nw",
         "to": "circle_n",
         "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
-          { "x": -30, "y": 0 },
-          { "x": -21, "y": 21 },
-          { "x": 0, "y": 30 }
+          { "x": -28, "y": 28 },
+          { "x": -16, "y": 40 },
+          { "x": 0, "y": 40 }
         ]
       },
       {
         "id": "north_entry_to_circle",
         "from": "north_entry",
         "to": "circle_n",
-        "lanes": 1,
+        "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
           { "x": 0, "y": 150 },
-          { "x": 0, "y": 30 }
+          { "x": 0, "y": 100 },
+          { "x": 0, "y": 40 }
         ]
       },
       {
         "id": "circle_to_north_exit",
         "from": "circle_n",
         "to": "north_entry",
-        "lanes": 1,
+        "lanes": 2,
         "speedLimit": 11.11,
         "roadType": "local",
         "geometry": [
-          { "x": 0, "y": 30 },
+          { "x": 0, "y": 40 },
+          { "x": 0, "y": 100 },
           { "x": 0, "y": 150 }
+        ]
+      },
+      {
+        "id": "east_entry_to_circle",
+        "from": "east_entry",
+        "to": "circle_e",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 150, "y": 0 },
+          { "x": 100, "y": 0 },
+          { "x": 40, "y": 0 }
+        ]
+      },
+      {
+        "id": "circle_to_east_exit",
+        "from": "circle_e",
+        "to": "east_entry",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 40, "y": 0 },
+          { "x": 100, "y": 0 },
+          { "x": 150, "y": 0 }
+        ]
+      },
+      {
+        "id": "south_entry_to_circle",
+        "from": "south_entry",
+        "to": "circle_s",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": -150 },
+          { "x": 0, "y": -100 },
+          { "x": 0, "y": -40 }
+        ]
+      },
+      {
+        "id": "circle_to_south_exit",
+        "from": "circle_s",
+        "to": "south_entry",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": 0, "y": -40 },
+          { "x": 0, "y": -100 },
+          { "x": 0, "y": -150 }
+        ]
+      },
+      {
+        "id": "west_entry_to_circle",
+        "from": "west_entry",
+        "to": "circle_w",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": -150, "y": 0 },
+          { "x": -100, "y": 0 },
+          { "x": -40, "y": 0 }
+        ]
+      },
+      {
+        "id": "circle_to_west_exit",
+        "from": "circle_w",
+        "to": "west_entry",
+        "lanes": 2,
+        "speedLimit": 11.11,
+        "roadType": "local",
+        "geometry": [
+          { "x": -40, "y": 0 },
+          { "x": -100, "y": 0 },
+          { "x": -150, "y": 0 }
         ]
       }
     ],
