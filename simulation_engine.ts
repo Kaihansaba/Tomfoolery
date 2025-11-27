@@ -105,8 +105,38 @@ export class TrafficSimulationEngine implements SimulationEngine {
     return undefined;
   }
 
+  private findLeaderDirect(laneId: LaneID, lanePosition: number, selfId?: VehicleID): VehicleState | undefined {
+    let closest: VehicleState | undefined;
+    let minDist = Infinity;
+    for (const other of this.vehicles.values()) {
+      if (other.id === selfId) continue;
+      if (other.laneId !== laneId) continue;
+      const gap = other.lanePosition - lanePosition;
+      if (gap > 0 && gap < minDist) {
+        minDist = gap;
+        closest = other;
+      }
+    }
+    return closest;
+  }
+
+  private findFollowerDirect(laneId: LaneID, lanePosition: number, selfId?: VehicleID): VehicleState | undefined {
+    let closest: VehicleState | undefined;
+    let minDist = Infinity;
+    for (const other of this.vehicles.values()) {
+      if (other.id === selfId) continue;
+      if (other.laneId !== laneId) continue;
+      const gap = lanePosition - other.lanePosition;
+      if (gap > 0 && gap < minDist) {
+        minDist = gap;
+        closest = other;
+      }
+    }
+    return closest;
+  }
+
   private enforceMinimumGap(laneVehicles: Map<LaneID, VehicleState[]>): void {
-    const minGap = 0.5;
+    const minGap = 2.0;
     for (const [laneId, vehicles] of laneVehicles.entries()) {
       const lane = this.network.getLane(laneId);
       if (!lane) continue;
@@ -165,7 +195,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
       if (leader) {
         vehicle.leaderId = leader.id;
         const gap = leader.lanePosition - vehicle.lanePosition;
-        const safeGap = 0.5;
+        const safeGap = 2.0;
         if (gap < safeGap) {
           const params = DEFAULT_VEHICLE_TYPES[vehicle.type]?.driver;
           const emergency = params ? -params.maxDecel * 1.5 : -8;
@@ -256,7 +286,44 @@ export class TrafficSimulationEngine implements SimulationEngine {
     }
     
     if (vehicle.laneChangeProgress >= 1.0) {
-      vehicle.laneId = vehicle.targetLaneId;
+      const targetLaneId = vehicle.targetLaneId;
+      if (targetLaneId) {
+        const leader = this.findLeaderDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
+        const follower = this.findFollowerDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
+        const minMergeGap = 2.0;
+
+        let newPos = vehicle.lanePosition;
+        if (leader) {
+          newPos = Math.min(newPos, leader.lanePosition - minMergeGap);
+        }
+        if (follower) {
+          newPos = Math.max(newPos, follower.lanePosition + minMergeGap);
+        }
+
+        // If there is no room, abandon this lane change and keep the current lane.
+        if (
+          (leader && follower && leader.lanePosition - follower.lanePosition < minMergeGap * 2) ||
+          newPos < 0 ||
+          (leader && newPos > leader.lanePosition - minMergeGap) ||
+          (follower && newPos < follower.lanePosition + minMergeGap)
+        ) {
+          vehicle.isChangingLane = false;
+          vehicle.targetLaneId = undefined;
+          vehicle.laneChangeProgress = undefined;
+          vehicle.laneOffset = 0;
+          this.laneChangeCooldown.set(vehicle.id, this.currentTime);
+          return;
+        }
+
+        vehicle.laneId = targetLaneId;
+        vehicle.lanePosition = newPos;
+        const lane = this.network.getLane(targetLaneId);
+        if (lane) {
+          vehicle.lanePosition = Math.min(lane.length, Math.max(0, vehicle.lanePosition));
+          this.updateGlobalPosition(vehicle, lane);
+        }
+      }
+
       vehicle.isChangingLane = false;
       vehicle.targetLaneId = undefined;
       vehicle.laneChangeProgress = undefined;
