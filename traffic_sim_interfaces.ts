@@ -19,6 +19,27 @@ export interface BoundingBox {
   maxY: number;
 }
 
+export interface GeoReference {
+  originLat: number;
+  originLon: number;
+  metersPerDegLat: number;
+  metersPerDegLon: number;
+  projected: boolean;
+  projection?: 'equirectangular' | 'mercator';
+  originMercatorX?: number;
+  originMercatorY?: number;
+  flipY?: boolean;
+}
+
+export interface BackdropConfig {
+  type: 'rasterTile';
+  tileUrl: string;
+  minZoom?: number;
+  maxZoom?: number;
+  tileSize?: number;
+  attribution?: string;
+}
+
 // ============================================================================
 // VEHICLE TYPES AND PARAMETERS
 // ============================================================================
@@ -80,7 +101,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
       minSpacing: 2.0,
       comfortableDecel: 3.0,
       accelExponent: 4.0,
-      reactionTime: 0.8,
+      reactionTime: 0.3,
       politeness: 0.3,
       laneChangeThreshold: 0.2,
       safeDecel: 4.0,
@@ -105,7 +126,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
       minSpacing: 3.0,
       comfortableDecel: 2.0,
       accelExponent: 4.0,
-      reactionTime: 1.0,
+      reactionTime: 0.4,
       politeness: 0.5,
       laneChangeThreshold: 0.3,
       safeDecel: 3.0,
@@ -130,7 +151,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
       minSpacing: 2.5,
       comfortableDecel: 2.5,
       accelExponent: 4.0,
-      reactionTime: 0.9,
+      reactionTime: 0.3,
       politeness: 0.4,
       laneChangeThreshold: 0.3,
       safeDecel: 3.5,
@@ -155,7 +176,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
       minSpacing: 1.5,
       comfortableDecel: 4.0,
       accelExponent: 4.0,
-      reactionTime: 0.6,
+      reactionTime: 0.3,
       politeness: 0.1,
       laneChangeThreshold: 0.15,
       safeDecel: 5.0,
@@ -384,6 +405,8 @@ export interface RoadNetwork {
   edges: Map<EdgeID, Edge>;
   lanes: Map<LaneID, Lane>;
   intersections: Map<NodeID, Intersection>;
+  geoReference?: GeoReference;
+  backdrop?: BackdropConfig;
   
   // Spatial index for efficient queries
   spatialIndex?: ISpatialIndex;
@@ -529,6 +552,8 @@ export interface NetworkJSON {
     author?: string;
     created?: string;
   };
+  geoReference?: GeoReference;
+  backdrop?: BackdropConfig;
   nodes: Array<{
     id: string;
     x: number;

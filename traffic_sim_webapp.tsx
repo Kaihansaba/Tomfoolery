@@ -11,6 +11,8 @@ import {
   VehicleCategory,
   VehicleState,
   Vector2D,
+  BackdropConfig,
+  GeoReference,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
 import heilbronnPerchance from './heilbronnperchance.json';
@@ -43,6 +45,13 @@ interface HudState {
   avgSpeed: number;
   fps: number;
 }
+
+type BackdropContext = {
+  network: RoadNetworkImpl;
+  tileCache: Map<string, HTMLImageElement>;
+  pendingTiles: Map<string, Promise<HTMLImageElement>>;
+  requestRedraw: () => void;
+};
 
 let vehicleCounter = 0;
 const MIN_ZOOM = 0.3;
@@ -198,6 +207,67 @@ function getLaneBounds(lane: Lane): Bounds {
   return bounds;
 }
 
+// ---------------------------------------------------------------------------
+// Tile helpers (Web Mercator)
+// ---------------------------------------------------------------------------
+
+const DEFAULT_BACKDROP: BackdropConfig = {
+  type: 'rasterTile',
+  tileUrl: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+  minZoom: 0,
+  maxZoom: 19,
+  tileSize: 256,
+};
+
+function lonToTile(lon: number, zoom: number): number {
+  return ((lon + 180) / 360) * 2 ** zoom;
+}
+
+function latToTile(lat: number, zoom: number): number {
+  const rad = (lat * Math.PI) / 180;
+  return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * 2 ** zoom;
+}
+
+function tileToLon(x: number, zoom: number): number {
+  return (x / 2 ** zoom) * 360 - 180;
+}
+
+function tileToLat(y: number, zoom: number): number {
+  const n = Math.PI - (2 * Math.PI * y) / 2 ** zoom;
+  return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+}
+
+function worldToGeo(pt: Vector2D, geoRef: GeoReference): { lat: number; lon: number } {
+  if (geoRef.projection === 'mercator' && geoRef.originMercatorX !== undefined && geoRef.originMercatorY !== undefined) {
+    const R = 6378137;
+    const mx = pt.x + geoRef.originMercatorX;
+    const myLocal = geoRef.flipY ? -pt.y : pt.y;
+    const my = myLocal + geoRef.originMercatorY;
+    const lon = (mx / R) * (180 / Math.PI);
+    const lat = (2 * Math.atan(Math.exp(my / R)) - Math.PI / 2) * (180 / Math.PI);
+    return { lat, lon };
+  }
+  return {
+    lon: geoRef.originLon + pt.x / geoRef.metersPerDegLon,
+    lat: geoRef.originLat + pt.y / geoRef.metersPerDegLat,
+  };
+}
+
+function geoToWorld(lat: number, lon: number, geoRef: GeoReference): Vector2D {
+  if (geoRef.projection === 'mercator' && geoRef.originMercatorX !== undefined && geoRef.originMercatorY !== undefined) {
+    const R = 6378137;
+    const lonRad = (lon * Math.PI) / 180;
+    const latRad = (lat * Math.PI) / 180;
+    const mx = R * lonRad - geoRef.originMercatorX;
+    const my = R * Math.log(Math.tan(Math.PI / 4 + latRad / 2)) - geoRef.originMercatorY;
+    return { x: mx, y: geoRef.flipY ? -my : my };
+  }
+  return {
+    x: (lon - geoRef.originLon) * geoRef.metersPerDegLon,
+    y: (lat - geoRef.originLat) * geoRef.metersPerDegLat,
+  };
+}
+
 function pickCategory(): VehicleCategory {
   const roll = Math.random();
   if (roll < 0.6) return VehicleCategory.CAR;
@@ -317,10 +387,113 @@ function drawVehicle(
   ctx.restore();
 }
 
+function drawBackdrop(
+  ctx: CanvasRenderingContext2D,
+  canvas: HTMLCanvasElement,
+  view: ViewTransform,
+  network: RoadNetworkImpl,
+  visibleBounds: Bounds,
+  tileCache: Map<string, HTMLImageElement>,
+  pending: Map<string, Promise<HTMLImageElement>>,
+  requestRedraw: () => void
+): void {
+  const geoRef = network.geoReference;
+  if (!geoRef) return;
+
+  const backdrop = network.backdrop ?? DEFAULT_BACKDROP;
+  if (backdrop.type !== 'rasterTile') return;
+
+  const tileSize = backdrop.tileSize ?? 256;
+  const lat0 = geoRef.originLat;
+  const cosLat = Math.max(0.2, Math.cos((lat0 * Math.PI) / 180));
+  const desiredMetersPerPixel = 1 / view.scale;
+  const metersPerPixelZoom0 = 156543.03392 * cosLat;
+  const rawZoom = Math.log2(metersPerPixelZoom0 / desiredMetersPerPixel);
+  const zoom = clamp(
+    Math.round(rawZoom),
+    backdrop.minZoom ?? 0,
+    backdrop.maxZoom ?? 19
+  );
+
+  const worldToGeoFn = (pt: Vector2D) => worldToGeo(pt, geoRef);
+  const minGeo = worldToGeoFn({ x: visibleBounds.minX, y: visibleBounds.minY });
+  const maxGeo = worldToGeoFn({ x: visibleBounds.maxX, y: visibleBounds.maxY });
+  const minLat = Math.min(minGeo.lat, maxGeo.lat);
+  const maxLat = Math.max(minGeo.lat, maxGeo.lat);
+  const minLon = Math.min(minGeo.lon, maxGeo.lon);
+  const maxLon = Math.max(minGeo.lon, maxGeo.lon);
+
+  const epsilon = 1e-9;
+  const tileX0 = Math.floor(lonToTile(minLon - epsilon, zoom));
+  const tileX1 = Math.floor(lonToTile(maxLon + epsilon, zoom));
+  const tileY0 = Math.floor(latToTile(maxLat + epsilon, zoom));
+  const tileY1 = Math.floor(latToTile(minLat - epsilon, zoom));
+
+  for (let x = tileX0; x <= tileX1; x++) {
+    for (let y = tileY0; y <= tileY1; y++) {
+      const url = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
+        .replace('{z}', String(zoom))
+        .replace('{x}', String(x))
+        .replace('{y}', String(y));
+      const key = `${url}`;
+
+      const lonLeft = tileToLon(x, zoom);
+      const lonRight = tileToLon(x + 1, zoom);
+      const latTop = tileToLat(y, zoom);
+      const latBottom = tileToLat(y + 1, zoom);
+
+      const worldSW = geoToWorld(latBottom, lonLeft, geoRef);
+      const worldNE = geoToWorld(latTop, lonRight, geoRef);
+      const tileBounds: Bounds = {
+        minX: Math.min(worldSW.x, worldNE.x),
+        maxX: Math.max(worldSW.x, worldNE.x),
+        minY: Math.min(worldSW.y, worldNE.y),
+        maxY: Math.max(worldSW.y, worldNE.y),
+      };
+
+      if (!boundsIntersect(tileBounds, visibleBounds)) continue;
+
+      let img = tileCache.get(key);
+      if (img && img.complete && img.naturalWidth > 0) {
+        const pA = worldToScreen(view, worldSW);
+        const pB = worldToScreen(view, worldNE);
+        const minX = Math.min(pA.x, pB.x);
+        const maxX = Math.max(pA.x, pB.x);
+        const minY = Math.min(pA.y, pB.y);
+        const maxY = Math.max(pA.y, pB.y);
+        const width = maxX - minX;
+        const height = maxY - minY;
+        ctx.drawImage(img, minX, minY, width, height);
+        continue;
+      }
+
+      if (!pending.has(key)) {
+        const promise = new Promise<HTMLImageElement>((resolve, reject) => {
+          const image = new Image(tileSize, tileSize);
+          image.crossOrigin = 'anonymous';
+          image.onload = () => resolve(image);
+          image.onerror = reject;
+          image.src = url;
+        })
+          .then(image => {
+            tileCache.set(key, image);
+            pending.delete(key);
+            requestRedraw();
+          })
+          .catch(() => {
+            pending.delete(key);
+          });
+        pending.set(key, promise);
+      }
+    }
+  }
+}
+
 function drawScene(
   canvas: HTMLCanvasElement,
   engine: TrafficSimulationEngine,
   view: ViewTransform,
+  backdropContext?: BackdropContext,
   spawnPoints: string[] = [],
   network?: RoadNetworkImpl
 ): void {
@@ -332,6 +505,18 @@ function drawScene(
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#0a0f1f';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (backdropContext) {
+    drawBackdrop(
+      ctx,
+      canvas,
+      view,
+      backdropContext.network,
+      visibleBounds,
+      backdropContext.tileCache,
+      backdropContext.pendingTiles,
+      backdropContext.requestRedraw
+    );
+  }
 
   let laneIndex = 0;
   for (const lane of engine.network.lanes.values()) {
@@ -382,6 +567,9 @@ export default function TrafficSimulationApp() {
   const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(
     null
   );
+  const tileCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
+  const pendingTileRef = useRef<Map<string, Promise<HTMLImageElement>>>(new Map());
+  const backdropContextRef = useRef<BackdropContext | null>(null);
   const spawnPointsRef = useRef<string[]>([]);
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
@@ -394,6 +582,23 @@ export default function TrafficSimulationApp() {
     fps: 0,
   });
   const [showHud, setShowHud] = useState(true);
+
+  const requestRedraw = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    const backdropCtx = backdropContextRef.current || undefined;
+    if (runtime && canvas && view) {
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropCtx,
+        spawnPointsRef.current,
+        runtime.network
+      );
+    }
+  }, []);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
 
@@ -406,6 +611,9 @@ export default function TrafficSimulationApp() {
     spawnPointsRef.current = [];
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
+
+    tileCacheRef.current.clear();
+    pendingTileRef.current.clear();
 
     const networkJSON = networks[scenario];
     const network = RoadNetworkImpl.fromJSON(networkJSON);
@@ -427,13 +635,19 @@ export default function TrafficSimulationApp() {
     }
 
     runtimeRef.current = { engine, network };
+    backdropContextRef.current = {
+      network,
+      tileCache: tileCacheRef.current,
+      pendingTiles: pendingTileRef.current,
+      requestRedraw,
+    };
     viewRef.current = computeView(network, canvas);
     lastFrameRef.current = performance.now();
     hudAccumulatorRef.current = 0;
     frameCountRef.current = 0;
     lastInitSeedRef.current = shouldSeedVehicles;
 
-    drawScene(canvas, engine, viewRef.current, spawnPointsRef.current, network);
+    drawScene(canvas, engine, viewRef.current, backdropContextRef.current || undefined, spawnPointsRef.current, network);
     setHud({
       time: 0,
       vehicles: engine.vehicles.size,
@@ -462,7 +676,14 @@ export default function TrafficSimulationApp() {
     const canvas = canvasRef.current;
     const view = viewRef.current;
     if (runtime && canvas && view) {
-      drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     }
   }, [spawnPoints]);
 
@@ -493,7 +714,14 @@ export default function TrafficSimulationApp() {
         } else {
           viewRef.current = computeView(runtime.network, canvas);
         }
-        drawScene(canvas, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
+        drawScene(
+          canvas,
+          runtime.engine,
+          viewRef.current,
+          backdropContextRef.current || undefined,
+          spawnPointsRef.current,
+          runtime.network
+        );
       }
     };
 
@@ -520,7 +748,14 @@ export default function TrafficSimulationApp() {
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.25);
       lastFrameRef.current = timestamp;
       runtime.engine.step(delta * timeScale);
-      drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
 
       hudAccumulatorRef.current += delta;
       frameCountRef.current += 1;
@@ -598,7 +833,14 @@ export default function TrafficSimulationApp() {
         };
       }
 
-      drawScene(canvas, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
+      drawScene(
+        canvas,
+        runtime.engine,
+        viewRef.current,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     };
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -639,7 +881,14 @@ export default function TrafficSimulationApp() {
         offsetX: start.offsetX + (event.clientX - start.x),
         offsetY: start.offsetY + (event.clientY - start.y),
       };
-      drawScene(canvasEl, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
+      drawScene(
+        canvasEl,
+        runtime.engine,
+        viewRef.current,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network
+      );
     };
 
     const endPan = (event: PointerEvent) => {
