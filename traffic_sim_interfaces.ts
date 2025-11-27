@@ -19,6 +19,27 @@ export interface BoundingBox {
   maxY: number;
 }
 
+export interface GeoReference {
+  originLat: number;
+  originLon: number;
+  metersPerDegLat: number;
+  metersPerDegLon: number;
+  projected: boolean;
+  projection?: 'equirectangular' | 'mercator';
+  originMercatorX?: number;
+  originMercatorY?: number;
+  flipY?: boolean;
+}
+
+export interface BackdropConfig {
+  type: 'rasterTile';
+  tileUrl: string;
+  minZoom?: number;
+  maxZoom?: number;
+  tileSize?: number;
+  attribution?: string;
+}
+
 // ============================================================================
 // VEHICLE TYPES AND PARAMETERS
 // ============================================================================
@@ -384,6 +405,8 @@ export interface RoadNetwork {
   edges: Map<EdgeID, Edge>;
   lanes: Map<LaneID, Lane>;
   intersections: Map<NodeID, Intersection>;
+  geoReference?: GeoReference;
+  backdrop?: BackdropConfig;
   
   // Spatial index for efficient queries
   spatialIndex?: ISpatialIndex;
@@ -529,6 +552,8 @@ export interface NetworkJSON {
     author?: string;
     created?: string;
   };
+  geoReference?: GeoReference;
+  backdrop?: BackdropConfig;
   nodes: Array<{
     id: string;
     x: number;
