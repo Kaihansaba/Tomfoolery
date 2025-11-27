@@ -52,6 +52,29 @@ function clamp(val: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, val));
 }
 
+function findClosestNode(
+  view: ViewTransform,
+  screenX: number,
+  screenY: number,
+  network: RoadNetworkImpl
+): string | undefined {
+  let closestId: string | undefined;
+  let minDist = Infinity;
+
+  for (const node of network.nodes.values()) {
+    const screenPos = worldToScreen(view, node.position);
+    const dx = screenPos.x - screenX;
+    const dy = screenPos.y - screenY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < minDist) {
+      minDist = dist;
+      closestId = node.id;
+    }
+  }
+
+  return closestId;
+}
+
 function distance(a: Vector2D, b: Vector2D): number {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -297,7 +320,9 @@ function drawVehicle(
 function drawScene(
   canvas: HTMLCanvasElement,
   engine: TrafficSimulationEngine,
-  view: ViewTransform
+  view: ViewTransform,
+  spawnPoints: string[] = [],
+  network?: RoadNetworkImpl
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -313,6 +338,18 @@ function drawScene(
     const laneBounds = getLaneBounds(lane);
     if (!boundsIntersect(laneBounds, visibleBounds)) continue;
     drawLane(ctx, view, lane, laneIndex++);
+  }
+
+  if (network && spawnPoints.length > 0) {
+    ctx.fillStyle = '#10b981';
+    for (const id of spawnPoints) {
+      const node = network.getNode(id);
+      if (!node) continue;
+      const screen = worldToScreen(view, node.position);
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   for (const vehicle of engine.vehicles.values()) {
@@ -345,6 +382,7 @@ export default function TrafficSimulationApp() {
   const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(
     null
   );
+  const spawnPointsRef = useRef<string[]>([]);
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
   const [isRunning, setIsRunning] = useState(true);
@@ -356,10 +394,16 @@ export default function TrafficSimulationApp() {
     fps: 0,
   });
   const [showHud, setShowHud] = useState(true);
+  const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
+  const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
 
   const initialize = (options?: { seedVehicles?: boolean }) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    setSpawnPointPlacementMode(false);
+    setSpawnPoints([]);
+    spawnPointsRef.current = [];
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
@@ -389,7 +433,7 @@ export default function TrafficSimulationApp() {
     hudAccumulatorRef.current = 0;
     lastInitSeedRef.current = shouldSeedVehicles;
 
-    drawScene(canvas, engine, viewRef.current);
+    drawScene(canvas, engine, viewRef.current, spawnPointsRef.current, network);
     setHud({
       time: 0,
       vehicles: engine.vehicles.size,
@@ -411,6 +455,16 @@ export default function TrafficSimulationApp() {
     initialize({ seedVehicles: shouldSeed });
     hasInitializedRef.current = true;
   }, [canvasReady, scenario]);
+
+  useEffect(() => {
+    spawnPointsRef.current = spawnPoints;
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (runtime && canvas && view) {
+      drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
+    }
+  }, [spawnPoints]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -439,7 +493,7 @@ export default function TrafficSimulationApp() {
         } else {
           viewRef.current = computeView(runtime.network, canvas);
         }
-        drawScene(canvas, runtime.engine, viewRef.current);
+        drawScene(canvas, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
       }
     };
 
@@ -466,7 +520,7 @@ export default function TrafficSimulationApp() {
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.25);
       lastFrameRef.current = timestamp;
       runtime.engine.step(delta * timeScale);
-      drawScene(canvas, runtime.engine, view);
+      drawScene(canvas, runtime.engine, view, spawnPointsRef.current, runtime.network);
 
       hudAccumulatorRef.current += delta;
       const drawDelta = timestamp - lastDrawRef.current;
@@ -540,7 +594,7 @@ export default function TrafficSimulationApp() {
         };
       }
 
-      drawScene(canvas, runtime.engine, viewRef.current);
+      drawScene(canvas, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
     };
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -553,6 +607,7 @@ export default function TrafficSimulationApp() {
     canvas.style.cursor = 'grab';
 
     const beginPan = (event: PointerEvent) => {
+      if (spawnPointPlacementMode) return;
       if (event.button !== 0 && event.button !== 1) return;
       const view = viewRef.current;
       if (!view) return;
@@ -580,7 +635,7 @@ export default function TrafficSimulationApp() {
         offsetX: start.offsetX + (event.clientX - start.x),
         offsetY: start.offsetY + (event.clientY - start.y),
       };
-      drawScene(canvasEl, runtime.engine, viewRef.current);
+      drawScene(canvasEl, runtime.engine, viewRef.current, spawnPointsRef.current, runtime.network);
     };
 
     const endPan = (event: PointerEvent) => {
@@ -607,11 +662,89 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady]);
+  }, [canvasReady, spawnPointPlacementMode]);
 
-  const handleAddVehicle = () => {
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const handleClick = (event: MouseEvent) => {
+      if (!spawnPointPlacementMode) return;
+      const runtime = runtimeRef.current;
+      const view = viewRef.current;
+      if (!runtime || !view) {
+        setSpawnPointPlacementMode(false);
+        return;
+      }
+      const rect = canvas.getBoundingClientRect();
+      const x = event.clientX - rect.left;
+      const y = event.clientY - rect.top;
+      const closest = findClosestNode(view, x, y, runtime.network);
+      setSpawnPointPlacementMode(false);
+      if (!closest) return;
+      setSpawnPoints(prev => {
+        if (prev.includes(closest)) return prev;
+        const next = [...prev, closest];
+        spawnPointsRef.current = next;
+        return next;
+      });
+    };
+
+    canvas.addEventListener('click', handleClick);
+    return () => {
+      canvas.removeEventListener('click', handleClick);
+    };
+  }, [spawnPointPlacementMode]);
+
+  const spawnVehicle = () => {
     const runtime = runtimeRef.current;
     if (!runtime) return;
+
+    const pickLaneFromNode = (nodeId: string): Lane | undefined => {
+      const candidateLanes: Lane[] = [];
+      for (const edge of runtime.network.edges.values()) {
+        if (edge.fromNode === nodeId) {
+          candidateLanes.push(...edge.lanes);
+        }
+      }
+      if (candidateLanes.length === 0) {
+        for (const edge of runtime.network.edges.values()) {
+          if (edge.toNode === nodeId) {
+            candidateLanes.push(...edge.lanes);
+          }
+        }
+      }
+      const driving = candidateLanes.filter(l => l.laneType === 'driving');
+      if (driving.length === 0) return undefined;
+      return driving.sort(
+        (a, b) =>
+          runtime.engine.getVehiclesInLane(a.id).length -
+          runtime.engine.getVehiclesInLane(b.id).length
+      )[0];
+    };
+
+    const trySpawnInLane = (lane: Lane): boolean => {
+      const laneVehicles = runtime.engine.getVehiclesInLane(lane.id);
+      const pos = Math.min(
+        lane.length - 5,
+        Math.max(1, 5 + Math.random() * Math.min(20, lane.length * 0.4))
+      );
+      const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 6);
+      if (!hasSpace) return false;
+      const vehicle = createVehicleState(lane, pos);
+      runtime.engine.addVehicle(vehicle);
+      return true;
+    };
+
+    if (spawnPointsRef.current.length > 0) {
+      const choice =
+        spawnPointsRef.current[Math.floor(Math.random() * spawnPointsRef.current.length)];
+      const lane = pickLaneFromNode(choice);
+      if (lane && trySpawnInLane(lane)) {
+        return;
+      }
+    }
+
     const lanes = Array.from(runtime.network.lanes.values()).filter(
       l => l.laneType === 'driving'
     );
@@ -628,13 +761,18 @@ export default function TrafficSimulationApp() {
       { lane: lanes[0], count: runtime.engine.getVehiclesInLane(lanes[0].id).length }
     ).lane;
 
-    const pos = Math.min(bestLane.length - 5, 5 + Math.random() * bestLane.length * 0.6);
-    const vehicle = createVehicleState(bestLane, pos);
-    runtime.engine.addVehicle(vehicle);
+    trySpawnInLane(bestLane);
+  };
+
+  const handleAddVehicle = () => {
+    spawnVehicle();
   };
 
   const handleReset = () => {
     setIsRunning(false);
+    setSpawnPoints([]);
+    spawnPointsRef.current = [];
+    setSpawnPointPlacementMode(false);
     initialize({ seedVehicles: lastInitSeedRef.current });
     setIsRunning(true);
   };
@@ -695,6 +833,16 @@ export default function TrafficSimulationApp() {
               className="flex items-center justify-center gap-2 rounded bg-cyan-600 hover:bg-cyan-500 px-3 py-2 col-span-2"
             >
               <Plus size={16} /> Inject vehicle
+            </button>
+            <button
+              onClick={() => setSpawnPointPlacementMode(true)}
+              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
+                spawnPointPlacementMode
+                  ? 'bg-emerald-500 text-slate-900'
+                  : 'bg-emerald-700 hover:bg-emerald-600'
+              }`}
+            >
+              <Plus size={16} /> Set Spawn Point
             </button>
           </div>
 
