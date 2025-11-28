@@ -129,6 +129,42 @@ const LOD_FULL = 1.3;
 const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const VEHICLE_TARGETS = {
+  off: 0,
+  low: 120,
+  mid: 500,
+  high: 1000,
+} as const;
+
+// Car sprite (only used for VehicleCategory.CAR)
+const carSprite: HTMLImageElement | null =
+  typeof Image !== 'undefined' ? new Image() : null;
+let carSpriteLoaded = false;
+
+if (carSprite) {
+  carSprite.src = '/car_sprite.png';
+  carSprite.onload = () => {
+    carSpriteLoaded = true;
+  };
+  carSprite.onerror = () => {
+    carSpriteLoaded = false;
+  };
+}
+
+// Bus sprite (only used for VehicleCategory.BUS)
+const busSprite: HTMLImageElement | null =
+  typeof Image !== 'undefined' ? new Image() : null;
+let busSpriteLoaded = false;
+
+if (busSprite) {
+  busSprite.src = '/bus_sprite.png';
+  busSprite.onload = () => {
+    busSpriteLoaded = true;
+  };
+  busSprite.onerror = () => {
+    busSpriteLoaded = false;
+  };
+}
 
 type OSMNode = {
   type: 'node';
@@ -706,18 +742,32 @@ function drawVehicle(
   
   ctx.translate(pos.x, pos.y);
   ctx.rotate(vehicle.heading);
-  ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
-  ctx.strokeStyle = '#0b0f1a';
-  ctx.lineWidth = 1;
 
-  ctx.beginPath();
-  ctx.rect(-length / 2, -width / 2, length, width);
-  ctx.fill();
-  ctx.stroke();
+  const useCarSprite =
+    vehicle.type === VehicleCategory.CAR && carSprite && carSpriteLoaded;
+  const useBusSprite =
+    vehicle.type === VehicleCategory.BUS && busSprite && busSpriteLoaded;
 
-  ctx.fillStyle = '#f5f5f5';
-  ctx.fillRect(length / 2 - 2, -width / 2 + 1, 2, 2);
-  ctx.fillRect(length / 2 - 2, width / 2 - 3, 2, 2);
+  if (useCarSprite && carSprite) {
+    // Scale the car sprite to the vehicle's physical dimensions on screen
+    ctx.drawImage(carSprite, -length / 2, -width / 2, length, width);
+  } else if (useBusSprite && busSprite) {
+    // Scale the bus sprite to the vehicle's physical dimensions on screen
+    ctx.drawImage(busSprite, -length / 2, -width / 2, length, width);
+  } else {
+    ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
+    ctx.strokeStyle = '#0b0f1a';
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.rect(-length / 2, -width / 2, length, width);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(length / 2 - 2, -width / 2 + 1, 2, 2);
+    ctx.fillRect(length / 2 - 2, width / 2 - 3, 2, 2);
+  }
   ctx.restore();
 }
 
@@ -1604,7 +1654,7 @@ export default function TrafficSimulationApp() {
     network: RoadNetworkImpl;
   } | null>(null);
   const hasInitializedRef = useRef(false);
-  const lastInitSeedRef = useRef(true); // remember whether last init seeded vehicles
+  const lastInitSeedRef = useRef(false); // keep map empty by default
   const viewRef = useRef<ViewTransform | null>(null);
   const rafRef = useRef<number>();
   const lastFrameRef = useRef<number>(0);
@@ -1650,10 +1700,13 @@ export default function TrafficSimulationApp() {
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
   const [obstacleRemovalMode, setObstacleRemovalMode] = useState(false);
+  const [speedSignPlacementMode, setSpeedSignPlacementMode] = useState<number | null>(null);
   const [trafficLightPlacementMode, setTrafficLightPlacementMode] = useState(false);
   const [trafficLightTimer, setTrafficLightTimer] = useState(0);
   const [trafficLights, setTrafficLights] = useState<TrafficLight[]>([]);
   const trafficLightsRef = useRef<TrafficLight[]>([]);
+  const vehicleTargetRef = useRef<number>(VEHICLE_TARGETS.off);
+  const [vehicleTarget, setVehicleTarget] = useState<number>(VEHICLE_TARGETS.off);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
@@ -1853,6 +1906,10 @@ export default function TrafficSimulationApp() {
     requestRedraw();
   }, [showBackdrop, requestRedraw]);
 
+  useEffect(() => {
+    vehicleTargetRef.current = vehicleTarget;
+  }, [vehicleTarget]);
+
   const applyZoom = useCallback(
     (newScale: number, anchor?: { x: number; y: number }) => {
       const canvas = canvasRef.current;
@@ -1907,6 +1964,7 @@ export default function TrafficSimulationApp() {
     spawnPointsRef.current = [];
     setTrafficLights([]);
     trafficLightsRef.current = [];
+    vehicleTargetRef.current = vehicleTarget;
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
@@ -2084,7 +2142,7 @@ export default function TrafficSimulationApp() {
 
   useEffect(() => {
     if (!canvasReady) return;
-    const shouldSeed = hasInitializedRef.current ? false : true;
+    const shouldSeed = false;
     initialize({ seedVehicles: shouldSeed });
     hasInitializedRef.current = true;
     if (viewRef.current) setZoomLevel(viewRef.current.scale);
@@ -2236,6 +2294,16 @@ export default function TrafficSimulationApp() {
 
         hudAccumulatorRef.current = 0;
         frameCountRef.current = 0;
+      }
+
+      // Passive population controller: top up to target if below
+      const target = vehicleTargetRef.current;
+      const deficit = Math.max(0, target - runtime.engine.vehicles.size);
+      if (deficit > 0) {
+        const attempts = Math.min(deficit, 8);
+        for (let i = 0; i < attempts; i++) {
+          spawnVehicle();
+        }
       }
 
       if (!isRunningRef.current) return;
