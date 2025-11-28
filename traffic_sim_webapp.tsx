@@ -157,6 +157,7 @@ const MIN_CHUNK_FETCH_INTERVAL_SEC = 3; // throttle Overpass requests
 const UNDISCOVERED_VIEWPORT_THRESHOLD = 0.2; // 20% of visible area
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const DEBUG_FETCH_LOGS = true;
+const VIEW_EPS = 1e-6;
 function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
   // Mirror the standalone overpass.ts format for consistent JSON structure
   return `[out:json][timeout:25];
@@ -325,6 +326,15 @@ function getViewBounds(view: ViewTransform, canvas: HTMLCanvasElement, marginPx 
     minY: (0 - view.offsetY) / view.scale - marginWorld,
     maxY: (canvas.height - view.offsetY) / view.scale + marginWorld,
   };
+}
+
+function viewsEqual(a: ViewTransform | null, b: ViewTransform | null): boolean {
+  if (!a || !b) return false;
+  return (
+    Math.abs(a.scale - b.scale) < VIEW_EPS &&
+    Math.abs(a.offsetX - b.offsetX) < VIEW_EPS &&
+    Math.abs(a.offsetY - b.offsetY) < VIEW_EPS
+  );
 }
 
 function overlapArea(a: Bounds, b: Bounds): number {
@@ -1193,7 +1203,8 @@ function drawScene(
   simulationMode: 'micro' | 'macro' = 'micro',
   toolMode: 'none' | 'addEdge' | 'subnetwork' | 'delete' = 'none',
   subnetworkSelection: Set<string> = new Set(),
-  pendingAddNodeId?: string
+  pendingAddNodeId?: string,
+  roadLayer?: HTMLCanvasElement | null
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -1224,7 +1235,10 @@ function drawScene(
       ? 0
       : clamp((lodScale - LOD_FADE_START) / (LOD_FULL - LOD_FADE_START), 0, 1);
 
-  if (!hideRoads && showRoadEdges) {
+  const hasRoadLayer = roadLayer && !hideRoads && showRoadEdges;
+  if (hasRoadLayer) {
+    ctx.drawImage(roadLayer, 0, 0);
+  } else if (!hideRoads && showRoadEdges) {
     let laneIndex = 0;
     for (const lane of engine.network.lanes.values()) {
       const laneBounds = getLaneBounds(lane);
@@ -1710,6 +1724,7 @@ async function fetchChunkAndMerge(
   chunkCache: Set<string>,
   pendingChunks: Set<string>,
   onRedraw: () => void,
+  markRoadsDirty?: () => void,
   addTrafficLights?: (lights: TrafficLight[]) => void
 ) {
   const geoRef = runtime.network.geoReference;
@@ -1743,6 +1758,7 @@ async function fetchChunkAndMerge(
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
+    if (markRoadsDirty) markRoadsDirty();
     if (addTrafficLights) {
       const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
       if (extracted.length > 0) addTrafficLights(extracted);
@@ -1787,6 +1803,9 @@ export default function TrafficSimulationApp() {
   const chunkCacheRef = useRef<Set<string>>(new Set());
   const pendingChunkFetchRef = useRef<Set<string>>(new Set());
   const lastChunkFetchRef = useRef<number>(0);
+  const roadsLayerRef = useRef<HTMLCanvasElement | null>(null);
+  const roadsDirtyRef = useRef<boolean>(true);
+  const lastRoadViewRef = useRef<ViewTransform | null>(null);
   const baseNetworkJSONRef = useRef<NetworkJSON | null>(null);
   const dynamicActiveRef = useRef(false);
   const hasUserZoomedRef = useRef(false);
@@ -1852,6 +1871,7 @@ export default function TrafficSimulationApp() {
     const canvas = canvasRef.current;
     const view = viewRef.current;
     if (runtime && canvas && view) {
+      const roadLayer = renderRoadLayer(view);
       drawScene(
         canvas,
         runtime.engine,
@@ -1866,7 +1886,8 @@ export default function TrafficSimulationApp() {
         simulationMode,
         toolMode,
         subnetworkSelection,
-        addToolState.pendingNodeId
+        addToolState.pendingNodeId,
+        roadLayer
       );
     }
   }, [spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
@@ -2021,6 +2042,9 @@ export default function TrafficSimulationApp() {
         chunkCacheRef.current,
         pendingChunkFetchRef.current,
         requestRedrawRef.current.fn,
+        () => {
+          roadsDirtyRef.current = true;
+        },
         newLights => {
           if (newLights.length === 0) return;
           setTrafficLights(prev => {
@@ -2041,6 +2065,58 @@ export default function TrafficSimulationApp() {
     [scenario, showBackdrop]
   );
 
+  const renderRoadLayer = useCallback(
+    (view: ViewTransform): HTMLCanvasElement | null => {
+      if (!showRoadEdges) return null;
+      const runtime = runtimeRef.current;
+      const canvas = canvasRef.current;
+      if (!runtime || !canvas) return null;
+
+      const lodScale = view.scale;
+      if (lodScale < LOD_HIDE_ROADS) return null;
+
+      let layer = roadsLayerRef.current;
+      if (!layer) {
+        layer = document.createElement('canvas');
+        roadsLayerRef.current = layer;
+        roadsDirtyRef.current = true;
+      }
+      if (layer.width !== canvas.width || layer.height !== canvas.height) {
+        layer.width = canvas.width;
+        layer.height = canvas.height;
+        roadsDirtyRef.current = true;
+      }
+
+      if (roadsDirtyRef.current || !viewsEqual(lastRoadViewRef.current, view)) {
+        const ctx = layer.getContext('2d');
+        if (!ctx) return null;
+
+        ctx.clearRect(0, 0, layer.width, layer.height);
+        const visibleBounds = getViewBounds(view, canvas, 80);
+        const fadeAlpha =
+          lodScale <= LOD_FADE_START
+            ? 0
+            : clamp((lodScale - LOD_FADE_START) / (LOD_FULL - LOD_FADE_START), 0, 1);
+
+        let laneIndex = 0;
+        for (const lane of runtime.engine.network.lanes.values()) {
+          const laneBounds = getLaneBounds(lane);
+          if (!boundsIntersect(laneBounds, visibleBounds)) continue;
+          ctx.save();
+          ctx.globalAlpha = fadeAlpha < 1 ? fadeAlpha : 1;
+          drawLane(ctx, view, lane, laneIndex++);
+          ctx.restore();
+        }
+
+        lastRoadViewRef.current = { ...view };
+        roadsDirtyRef.current = false;
+      }
+
+      return layer;
+    },
+    [showRoadEdges]
+  );
+
   const requestRedraw = useCallback(() => {
     // Use requestAnimationFrame to break potential infinite loops
     // Cancel any pending redraw to avoid stacking
@@ -2055,6 +2131,7 @@ export default function TrafficSimulationApp() {
       const view = viewRef.current;
       const backdropCtx = backdropContextRef.current || undefined;
       if (runtime && canvas && view) {
+        const roadLayer = renderRoadLayer(view);
         drawScene(
           canvas,
           runtime.engine,
@@ -2069,7 +2146,8 @@ export default function TrafficSimulationApp() {
           simulationMode,
           toolMode,
           subnetworkSelection,
-          addToolState.pendingNodeId
+          addToolState.pendingNodeId,
+          roadLayer
         );
         updateStreetSuggestions();
         updateDynamicChunks(view);
@@ -2099,6 +2177,11 @@ export default function TrafficSimulationApp() {
   }, [showBackdrop, requestRedraw]);
 
   useEffect(() => {
+    roadsDirtyRef.current = true;
+    requestRedraw();
+  }, [showRoadEdges, requestRedraw]);
+
+  useEffect(() => {
     vehicleTargetRef.current = vehicleTarget;
     pendingTopUpRef.current = vehicleTarget > 0;
   }, [vehicleTarget]);
@@ -2120,6 +2203,7 @@ export default function TrafficSimulationApp() {
         offsetX: anchorPoint.x - worldBefore.x * clamped,
         offsetY: anchorPoint.y - worldBefore.y * clamped,
       };
+      roadsDirtyRef.current = true;
       setZoomLevel(clamped);
       const runtime = runtimeRef.current;
       if (runtime && canvas) {
@@ -2208,6 +2292,7 @@ export default function TrafficSimulationApp() {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
     engine.setLaneChangeModel(new MOBILModel());
+    roadsDirtyRef.current = true;
     runtimeRef.current = { engine, network };
     backdropContextRef.current = {
       network,
@@ -2250,7 +2335,8 @@ export default function TrafficSimulationApp() {
       simulationMode,
       toolMode,
       subnetworkSelection,
-      addToolState.pendingNodeId
+      addToolState.pendingNodeId,
+      renderRoadLayer(viewRef.current)
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -2280,7 +2366,8 @@ export default function TrafficSimulationApp() {
           simulationMode,
           toolMode,
           subnetworkSelection,
-          addToolState.pendingNodeId
+          addToolState.pendingNodeId,
+          renderRoadLayer(viewRef.current as ViewTransform)
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
@@ -2374,6 +2461,7 @@ export default function TrafficSimulationApp() {
     const canvas = canvasRef.current;
     const view = viewRef.current;
     if (runtime && canvas && view) {
+      const roadLayer = renderRoadLayer(view);
       drawScene(
         canvas,
         runtime.engine,
@@ -2388,7 +2476,8 @@ export default function TrafficSimulationApp() {
         simulationMode,
         toolMode,
         subnetworkSelection,
-        addToolState.pendingNodeId
+        addToolState.pendingNodeId,
+        roadLayer
       );
       updateDynamicChunks(view);
     }
@@ -2421,6 +2510,8 @@ export default function TrafficSimulationApp() {
         } else {
           viewRef.current = computeView(runtime.network, canvas);
         }
+        roadsDirtyRef.current = true;
+        const roadLayer = renderRoadLayer(viewRef.current);
         drawScene(
           canvas,
           runtime.engine,
@@ -2435,7 +2526,8 @@ export default function TrafficSimulationApp() {
           simulationMode,
           toolMode,
           subnetworkSelection,
-          addToolState.pendingNodeId
+          addToolState.pendingNodeId,
+          roadLayer
         );
         setZoomLevel(viewRef.current.scale);
         updateDynamicChunks(viewRef.current);
@@ -2475,6 +2567,7 @@ export default function TrafficSimulationApp() {
         trafficLightsRef
       );
       enforceTrafficLights(runtime.engine, trafficLightsRef.current);
+      const roadLayer = renderRoadLayer(view);
       drawScene(
         canvas,
         runtime.engine,
@@ -2489,7 +2582,8 @@ export default function TrafficSimulationApp() {
         simulationMode,
         toolMode,
         subnetworkSelection,
-        addToolState.pendingNodeId
+        addToolState.pendingNodeId,
+        roadLayer
       );
 
       hudAccumulatorRef.current += delta;
@@ -2582,6 +2676,7 @@ export default function TrafficSimulationApp() {
           offsetX: cursor.x - worldBefore.x * newScale,
           offsetY: cursor.y - worldBefore.y * newScale,
         };
+        roadsDirtyRef.current = true;
         setZoomLevel(newScale);
       } else {
         viewRef.current = {
@@ -2589,6 +2684,7 @@ export default function TrafficSimulationApp() {
           offsetX: view.offsetX - event.deltaX * panScale,
           offsetY: view.offsetY - event.deltaY * panScale,
         };
+        roadsDirtyRef.current = true;
       }
 
       drawScene(
@@ -2605,7 +2701,8 @@ export default function TrafficSimulationApp() {
         simulationMode,
         toolMode,
         subnetworkSelection,
-        addToolState.pendingNodeId
+        addToolState.pendingNodeId,
+        renderRoadLayer(view)
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2656,6 +2753,8 @@ export default function TrafficSimulationApp() {
         offsetX: start.offsetX + (event.clientX - start.x),
         offsetY: start.offsetY + (event.clientY - start.y),
       };
+      roadsDirtyRef.current = true;
+      const roadLayer = renderRoadLayer(viewRef.current);
       drawScene(
         canvasEl,
         runtime.engine,
@@ -2670,7 +2769,8 @@ export default function TrafficSimulationApp() {
         simulationMode,
         toolMode,
         subnetworkSelection,
-        addToolState.pendingNodeId
+        addToolState.pendingNodeId,
+        roadLayer
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);

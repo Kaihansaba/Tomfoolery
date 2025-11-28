@@ -606,13 +606,22 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private interpolateLanePosition(lane: Lane, t: number): Vector2D {
     // Linear interpolation along centerline polyline
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length === 0) {
+      return { x: 0, y: 0 };
+    }
+    if (points.length === 1) {
+      return points[0];
+    }
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
-    const localT = (t * n) - segment;
+    const localT = Math.min(1, Math.max(0, t * n - segment));
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) {
+      return points[0] ?? { x: 0, y: 0 };
+    }
     
     return {
       x: p0.x + (p1.x - p0.x) * localT,
@@ -622,16 +631,23 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private getLaneNormal(lane: Lane, t: number): Vector2D {
     // Get tangent direction
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length < 2) {
+      return { x: 0, y: 0 };
+    }
+
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) {
+      return { x: 0, y: 0 };
+    }
     
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
     
     // Normal is perpendicular to tangent
     return {
@@ -641,12 +657,15 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   private getLaneHeading(lane: Lane, t: number): number {
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length < 2) return 0;
+
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) return 0;
     
     return Math.atan2(p1.y - p0.y, p1.x - p0.x);
   }
