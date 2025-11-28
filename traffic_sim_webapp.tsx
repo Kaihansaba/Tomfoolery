@@ -1,5 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, RotateCcw, Plus, Minus, Zap, Info, Gauge } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  Plus,
+  Minus,
+  Zap,
+  ChevronUp,
+  Search,
+  Sparkles,
+  MapPin,
+  Shield,
+  Eraser,
+  GitBranchPlus,
+  TrafficCone,
+} from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
 import { IDMModel, MOBILModel } from './traffic_sim_models';
@@ -19,6 +33,8 @@ import {
 import exampleNetworks from './example_networks.json';
 import heilbronnPerchance from './heilbronnperchance.json';
 import testperchance from './testperchance.json';
+import { fastIndexLoad } from './src/utils/mapLoader';
+import { config as appConfig } from './src/config';
 
 const networks = {
   ...exampleNetworks,
@@ -66,24 +82,39 @@ interface HudState {
   fps: number;
 }
 
+type StatMode = 'basic' | 'extended' | 'advanced';
+
+type TrafficLightState = 'green' | 'red';
+type TrafficLight = {
+  id: string;
+  position: Vector2D;
+  heading: number;
+  laneId: string;
+  lanePosition: number;
+  state: TrafficLightState;
+  timerSeconds: number; // 0 for manual
+  nextSwitchTime: number; // simulation time when to toggle, if timer > 0
+};
+
 type BackdropContext = {
   network: RoadNetworkImpl;
   tileCache: Map<string, HTMLImageElement>;
   pendingTiles: Map<string, Promise<HTMLImageElement>>;
   requestRedraw: () => void;
   enabled: boolean;
+  theme?: BackdropConfig;
 };
 
 let vehicleCounter = 0;
+const MIN_ZOOM = 0.00005;
+const MAX_ZOOM = 4;
 let obstacleCounter = 50000;
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 3.5;
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
 const MAX_ZOOM_SLIDER = MAX_ZOOM;
 const LOD_HIDE_ROADS = 0.7;
 const LOD_FADE_START = 0.9;
 const LOD_FULL = 1.3;
-const HEATMAP_CELL_SIZE = 80; // world units
+const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 
@@ -281,6 +312,41 @@ function computeEdgeStats(network: RoadNetworkImpl, edgeId: string) {
   return { length, speedLimit: speedVal, travelMinutes, lanes };
 }
 
+function parseMaxspeed(tags: Record<string, string | undefined> = {}): number | undefined {
+  const raw =
+    tags['maxspeed:forward'] ||
+    tags['maxspeed:backward'] ||
+    tags['maxspeed'];
+  if (!raw) return undefined;
+
+  const val = raw.trim().toLowerCase();
+  // Common textual values we ignore for now
+  if (!val || ['signals', 'variable', 'none', 'national', 'unlimited'].includes(val)) {
+    return undefined;
+  }
+
+  // Handle mph or km/h suffix
+  const mphMatch = val.match(/^(\d+)\s*mph$/);
+  if (mphMatch) {
+    const mph = Number(mphMatch[1]);
+    return isFinite(mph) ? mph * 0.44704 : undefined; // convert to m/s
+  }
+
+  const kmhMatch = val.match(/^(\d+)\s*(km\/h)?$/);
+  if (kmhMatch) {
+    const kmh = Number(kmhMatch[1]);
+    return isFinite(kmh) ? (kmh / 3.6) : undefined; // convert to m/s
+  }
+
+  const numeric = Number(val);
+  if (isFinite(numeric)) {
+    // Assume km/h if no unit
+    return numeric / 3.6;
+  }
+
+  return undefined;
+}
+
 function downloadJSON(filename: string, data: any) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -374,6 +440,18 @@ const DEFAULT_BACKDROP: BackdropConfig = {
   minZoom: 0,
   maxZoom: 19,
   tileSize: 256,
+};
+
+const BACKDROP_THEMES: Record<string, BackdropConfig> = {
+  osm: DEFAULT_BACKDROP,
+  light: {
+    ...DEFAULT_BACKDROP,
+    tileUrl: 'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+  },
+  dark: {
+    ...DEFAULT_BACKDROP,
+    tileUrl: 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+  },
 };
 
 function lonToTile(lon: number, zoom: number): number {
@@ -846,6 +924,7 @@ function drawBackdrop(
   canvas: HTMLCanvasElement,
   view: ViewTransform,
   network: RoadNetworkImpl,
+  theme: BackdropConfig | undefined,
   visibleBounds: Bounds,
   tileCache: Map<string, HTMLImageElement>,
   pending: Map<string, Promise<HTMLImageElement>>,
@@ -854,7 +933,7 @@ function drawBackdrop(
   const geoRef = network.geoReference;
   if (!geoRef) return;
 
-  const backdrop = network.backdrop ?? DEFAULT_BACKDROP;
+  const backdrop = theme ?? network.backdrop ?? DEFAULT_BACKDROP;
   if (backdrop.type !== 'rasterTile') return;
 
   const tileSize = backdrop.tileSize ?? 256;
@@ -882,14 +961,16 @@ function drawBackdrop(
   const tileX1 = Math.floor(lonToTile(maxLon + epsilon, zoom));
   const tileY0 = Math.floor(latToTile(maxLat + epsilon, zoom));
   const tileY1 = Math.floor(latToTile(minLat - epsilon, zoom));
+  const numTiles = 2 ** zoom;
 
   for (let x = tileX0; x <= tileX1; x++) {
     for (let y = tileY0; y <= tileY1; y++) {
-      const url = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
+      const wrappedX = ((x % numTiles) + numTiles) % numTiles;
+      const tileUrl = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
         .replace('{z}', String(zoom))
-        .replace('{x}', String(x))
+        .replace('{x}', String(wrappedX))
         .replace('{y}', String(y));
-      const key = `${url}`;
+      const key = `${tileUrl}-${zoom}-${wrappedX}-${y}`;
 
       const lonLeft = tileToLon(x, zoom);
       const lonRight = tileToLon(x + 1, zoom);
@@ -927,7 +1008,7 @@ function drawBackdrop(
           image.crossOrigin = 'anonymous';
           image.onload = () => resolve(image);
           image.onerror = reject;
-          image.src = url;
+          image.src = tileUrl;
         })
           .then(image => {
             tileCache.set(key, image);
@@ -954,7 +1035,8 @@ function drawScene(
   network?: RoadNetworkImpl,
   selection?: Selection,
   highlightSpawnNodes: boolean = false,
-  showRoadEdges: boolean = true
+  showRoadEdges: boolean = true,
+  trafficLights: TrafficLight[] = []
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -970,6 +1052,7 @@ function drawScene(
       canvas,
       view,
       backdropContext.network,
+      backdropContext.theme,
       visibleBounds,
       backdropContext.tileCache,
       backdropContext.pendingTiles,
@@ -1036,6 +1119,24 @@ function drawScene(
       ctx.beginPath();
       ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  // Traffic lights (only show when roads are shown)
+  if (!hideRoads) {
+    for (const tl of trafficLights) {
+      const screen = worldToScreen(view, tl.position);
+      ctx.save();
+      ctx.translate(screen.x, screen.y);
+      ctx.rotate(tl.heading);
+      ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(-6, -10, 12, 20);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
   }
 
@@ -1140,7 +1241,7 @@ function overpassToNetworkJSON(
     if (geometry.length < 2) continue;
 
     const laneCount = Math.max(1, parseInt(tags.lanes ?? '1', 10));
-    const speedLimit = tags.maxspeed ? parseInt(tags.maxspeed, 10) : undefined;
+    const speedLimit = parseMaxspeed(tags);
     const edgeId = `chunk_${chunkKey}_way_${way.id}`;
 
     edges.push({
@@ -1221,14 +1322,125 @@ function mergeNetworkFromJSON(target: RoadNetworkImpl, fragmentJSON: NetworkJSON
       }
     }
     target.addEdge(edge);
-    if (edgeData.speedLimit) {
-      for (const lane of edge.lanes) {
-        lane.speedLimit = edgeData.speedLimit;
+      if (edgeData.speedLimit) {
+        for (const lane of edge.lanes) {
+          lane.speedLimit = edgeData.speedLimit;
+          (lane as any).metadata = { ...(lane as any).metadata, speed_limit: edgeData.speedLimit };
+        }
       }
+    }
+
+  target.rebuildLaneConnectivity();
+}
+
+function updateTrafficLightTimers(
+  lights: TrafficLight[],
+  currentTime: number,
+  setLights: (next: TrafficLight[]) => void,
+  lightsRef: React.MutableRefObject<TrafficLight[]>
+) {
+  let changed = false;
+  const nextLights = lights.map(tl => {
+    if (tl.timerSeconds > 0 && currentTime >= tl.nextSwitchTime) {
+      changed = true;
+      const newState: TrafficLightState = tl.state === 'green' ? 'red' : 'green';
+      return {
+        ...tl,
+        state: newState,
+        nextSwitchTime: currentTime + tl.timerSeconds,
+      };
+    }
+    return tl;
+  });
+  if (changed) {
+    lightsRef.current = nextLights;
+    setLights(nextLights);
+  }
+}
+
+function enforceTrafficLights(engine: TrafficSimulationEngine, lights: TrafficLight[]) {
+  for (const vehicle of engine.vehicles.values()) {
+    if (!vehicle.laneId) continue;
+    const redAhead = lights.find(
+      tl =>
+        tl.state === 'red' &&
+        tl.laneId === vehicle.laneId &&
+        tl.lanePosition > vehicle.lanePosition &&
+        tl.lanePosition - vehicle.lanePosition < 20
+    );
+    if (redAhead) {
+      vehicle.velocity = 0;
+      vehicle.acceleration = 0;
+      vehicle.lanePosition = Math.min(vehicle.lanePosition, redAhead.lanePosition - 3);
+    }
+  }
+}
+
+function findNearestLaneAt(
+  network: RoadNetworkImpl,
+  world: Vector2D,
+  maxDist = 40
+): { lane: Lane; s: number; heading: number } | null {
+  let best: { lane: Lane; s: number; heading: number; distSq: number } | null = null;
+
+  for (const lane of network.lanes.values()) {
+    if (lane.laneType !== 'driving' || lane.centerline.length < 2) continue;
+    let accumulated = 0;
+    for (let i = 0; i < lane.centerline.length - 1; i++) {
+      const p0 = lane.centerline[i];
+      const p1 = lane.centerline[i + 1];
+      const segLen = distance(p0, p1);
+      if (segLen < 1e-6) continue;
+
+      const t =
+        ((world.x - p0.x) * (p1.x - p0.x) + (world.y - p0.y) * (p1.y - p0.y)) /
+        (segLen * segLen);
+      const clamped = Math.max(0, Math.min(1, t));
+      const proj = { x: p0.x + (p1.x - p0.x) * clamped, y: p0.y + (p1.y - p0.y) * clamped };
+      const dx = world.x - proj.x;
+      const dy = world.y - proj.y;
+      const distSq = dx * dx + dy * dy;
+      const s = accumulated + clamped * segLen;
+      if (!best || distSq < best.distSq) {
+        const heading = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+        best = { lane, s, heading, distSq };
+      }
+      accumulated += segLen;
     }
   }
 
-  target.rebuildLaneConnectivity();
+  if (best && best.distSq <= maxDist * maxDist) {
+    return { lane: best.lane, s: best.s, heading: best.heading };
+  }
+  return null;
+}
+
+function extractTrafficLightsFromOSM(
+  osm: OSMResponse,
+  geoRef: GeoReference,
+  network: RoadNetworkImpl,
+  chunkKey: string
+): TrafficLight[] {
+  const lights: TrafficLight[] = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'node') continue;
+    const n = el as OSMNode;
+    if (n.tags?.highway !== 'traffic_signals') continue;
+    const world = geoToWorld(n.lat, n.lon, geoRef);
+    const snapped = findNearestLaneAt(network, world, 40);
+    if (!snapped) continue;
+    lights.push({
+      id: `tl_${chunkKey}_${n.id}`,
+      position: projectAlongLane(snapped.lane, snapped.s).position,
+      heading: snapped.heading,
+      laneId: snapped.lane.id,
+      lanePosition: snapped.s,
+      state: 'green',
+      timerSeconds: 0,
+      nextSwitchTime: Infinity,
+    });
+  }
+  return lights;
 }
 
 async function fetchChunkAndMerge(
@@ -1238,7 +1450,8 @@ async function fetchChunkAndMerge(
   runtime: { network: RoadNetworkImpl; engine: TrafficSimulationEngine },
   chunkCache: Set<string>,
   pendingChunks: Set<string>,
-  onRedraw: () => void
+  onRedraw: () => void,
+  addTrafficLights?: (lights: TrafficLight[]) => void
 ) {
   const geoRef = runtime.network.geoReference;
   if (!geoRef) return;
@@ -1259,6 +1472,7 @@ async function fetchChunkAndMerge(
   const query = `[out:json][timeout:25];
   (
     way["highway"](${south},${west},${north},${east});
+    node["highway"="traffic_signals"](${south},${west},${north},${east});
     >;
   );
   out;`;
@@ -1276,6 +1490,10 @@ async function fetchChunkAndMerge(
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
+    if (addTrafficLights) {
+      const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
+      if (extracted.length > 0) addTrafficLights(extracted);
+    }
     chunkCache.add(chunkKey);
     onRedraw();
   } catch (err) {
@@ -1314,9 +1532,12 @@ export default function TrafficSimulationApp() {
   const baseNetworkJSONRef = useRef<NetworkJSON | null>(null);
   const dynamicActiveRef = useRef(false);
   const [showBackdrop, setShowBackdrop] = useState(true);
+  const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('osm');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
-  const requestRedrawRef = useRef<(() => void) & { _pending?: boolean; _rafId?: number }>(() => {});
+  const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('trackpad');
+  const requestRedrawRef = useRef<{ fn: () => void }>({ fn: () => {} });
+  const redrawRafIdRef = useRef<number | undefined>(undefined);
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
   const [isRunning, setIsRunning] = useState(true);
@@ -1327,17 +1548,28 @@ export default function TrafficSimulationApp() {
     avgSpeed: 0,
     fps: 0,
   });
+  const statModes: StatMode[] = ['basic', 'extended', 'advanced'];
+  const [statModeIndex, setStatModeIndex] = useState(0);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [showHud, setShowHud] = useState(true);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
   const [obstacleRemovalMode, setObstacleRemovalMode] = useState(false);
+  const [trafficLightPlacementMode, setTrafficLightPlacementMode] = useState(false);
+  const [trafficLightTimer, setTrafficLightTimer] = useState(0);
+  const [trafficLights, setTrafficLights] = useState<TrafficLight[]>([]);
+  const trafficLightsRef = useRef<TrafficLight[]>([]);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
   const selectionRef = useRef<Selection | undefined>(undefined);
+  const isRunningRef = useRef(true);
   const lastSuggestionUpdateRef = useRef(0);
+  const swipeStartRef = useRef<number | null>(null);
+  const pendingIndexRef = useRef<Promise<any> | null>(null);
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -1354,7 +1586,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
     }
   }, [spawnPointPlacementMode, showRoadEdges]);
@@ -1407,43 +1640,6 @@ export default function TrafficSimulationApp() {
       const runtime = runtimeRef.current;
       if (!canvas || !runtime?.network.geoReference) return;
 
-      if (view.scale < LOD_FULL) {
-        dynamicChunksRef.current.clear();
-        chunkCacheRef.current.clear();
-        pendingChunkFetchRef.current.clear();
-        if (dynamicActiveRef.current && baseNetworkJSONRef.current) {
-          const restored = RoadNetworkImpl.fromJSON(baseNetworkJSONRef.current);
-          runtime.network = restored;
-          runtime.engine.network = restored;
-          runtime.engine.reset();
-          if (lastInitSeedRef.current) {
-            seedVehicles(runtime.engine, scenario);
-          }
-          backdropContextRef.current = {
-            ...(backdropContextRef.current || {
-              tileCache: tileCacheRef.current,
-              pendingTiles: pendingTileRef.current,
-              requestRedraw: requestRedrawRef.current,
-            }),
-            network: restored,
-            enabled: showBackdrop,
-          };
-          dynamicActiveRef.current = false;
-        drawScene(
-          canvas,
-          runtime.engine,
-          view,
-          backdropContextRef.current || undefined,
-          spawnPointsRef.current,
-          restored,
-          selectionRef.current,
-          spawnPointPlacementMode,
-          showRoadEdges
-        );
-      }
-        return;
-      }
-
       const centerWorld = {
         x: (canvas.width / 2 - view.offsetX) / view.scale,
         y: (canvas.height / 2 - view.offsetY) / view.scale,
@@ -1466,7 +1662,22 @@ export default function TrafficSimulationApp() {
             runtime,
             chunkCacheRef.current,
             pendingChunkFetchRef.current,
-            requestRedrawRef.current
+            requestRedrawRef.current.fn,
+            newLights => {
+              if (newLights.length === 0) return;
+              setTrafficLights(prev => {
+                const existing = new Set(prev.map(tl => tl.id));
+                const merged = [...prev];
+                for (const tl of newLights) {
+                  if (!existing.has(tl.id)) {
+                    merged.push(tl);
+                    existing.add(tl.id);
+                  }
+                }
+                trafficLightsRef.current = merged;
+                return merged;
+              });
+            }
           );
         }
         // Placeholder for future fetch/merge of road data for this chunk.
@@ -1478,12 +1689,12 @@ export default function TrafficSimulationApp() {
   const requestRedraw = useCallback(() => {
     // Use requestAnimationFrame to break potential infinite loops
     // Cancel any pending redraw to avoid stacking
-    if (requestRedrawRef.current._rafId !== undefined) {
-      cancelAnimationFrame(requestRedrawRef.current._rafId);
+    if (redrawRafIdRef.current !== undefined) {
+      cancelAnimationFrame(redrawRafIdRef.current);
     }
     
-    requestRedrawRef.current._rafId = requestAnimationFrame(() => {
-      requestRedrawRef.current._rafId = undefined;
+    redrawRafIdRef.current = requestAnimationFrame(() => {
+      redrawRafIdRef.current = undefined;
       const runtime = runtimeRef.current;
       const canvas = canvasRef.current;
       const view = viewRef.current;
@@ -1507,7 +1718,21 @@ export default function TrafficSimulationApp() {
   }, [spawnPointPlacementMode, showRoadEdges, updateStreetSuggestions, updateDynamicChunks]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
-  requestRedrawRef.current = requestRedraw;
+  requestRedrawRef.current.fn = requestRedraw;
+
+  useEffect(() => {
+    if (backdropContextRef.current) {
+      backdropContextRef.current.theme = BACKDROP_THEMES[backdropTheme] || DEFAULT_BACKDROP;
+    }
+    // flush caches so old tiles aren't reused across themes
+    tileCacheRef.current.clear();
+    pendingTileRef.current.clear();
+    requestRedraw();
+  }, [backdropTheme, requestRedraw]);
+
+  useEffect(() => {
+    trafficLightsRef.current = trafficLights;
+  }, [trafficLights]);
 
   useEffect(() => {
     requestRedraw();
@@ -1541,7 +1766,8 @@ export default function TrafficSimulationApp() {
           runtime.network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
@@ -1557,8 +1783,11 @@ export default function TrafficSimulationApp() {
     setSpawnPointPlacementMode(false);
     setObstaclePlacementMode(false);
     setObstacleRemovalMode(false);
+    setTrafficLightPlacementMode(false);
     setSpawnPoints([]);
     spawnPointsRef.current = [];
+    setTrafficLights([]);
+    trafficLightsRef.current = [];
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
@@ -1571,8 +1800,21 @@ export default function TrafficSimulationApp() {
     baseNetworkJSONRef.current = null;
 
     const networkJSON = networks[scenario];
+
+    if (appConfig.optimizations.chunkedIndex) {
+      const urlMap: Partial<Record<ScenarioKey, string>> = {
+        heilbronn_perchance: '/heilbronnperchance.json',
+        test_perchance: '/testperchance.json',
+      };
+      const url = urlMap[scenario];
+      if (url && !pendingIndexRef.current) {
+        pendingIndexRef.current = fastIndexLoad(url).catch(err =>
+          console.warn('Chunked index load failed', err)
+        );
+      }
+    }
     const network = RoadNetworkImpl.fromJSON(networkJSON);
-    const config: SimulationConfig = {
+    const simConfig: SimulationConfig = {
       timeStep: 1 / 60,
       targetFPS: 60,
       maxVehicles: 600,
@@ -1580,7 +1822,7 @@ export default function TrafficSimulationApp() {
       spatialIndexType: 'quadtree',
     };
 
-    const engine = new TrafficSimulationEngine(network, config);
+    const engine = new TrafficSimulationEngine(network, simConfig);
     Object.entries(DEFAULT_VEHICLE_TYPES).forEach(([key, typeConfig]) => {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
@@ -1592,6 +1834,7 @@ export default function TrafficSimulationApp() {
       pendingTiles: pendingTileRef.current,
       requestRedraw,
       enabled: showBackdrop,
+      theme: BACKDROP_THEMES[backdropTheme] || DEFAULT_BACKDROP,
     };
     viewRef.current = computeView(network, canvas);
     lastFrameRef.current = performance.now();
@@ -1607,7 +1850,8 @@ export default function TrafficSimulationApp() {
       network,
       selectionRef.current,
       spawnPointPlacementMode,
-      showRoadEdges
+      showRoadEdges,
+      trafficLightsRef.current
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -1630,7 +1874,8 @@ export default function TrafficSimulationApp() {
           network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
@@ -1730,7 +1975,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateDynamicChunks(view);
     }
@@ -1785,12 +2031,15 @@ export default function TrafficSimulationApp() {
   }, []);
 
   useEffect(() => {
+    isRunningRef.current = isRunning;
     if (!isRunning) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       return;
     }
 
     const tick = (timestamp: number) => {
+      if (!isRunningRef.current) return;
+
       const runtime = runtimeRef.current;
       const canvas = canvasRef.current;
       const view = viewRef.current;
@@ -1802,6 +2051,13 @@ export default function TrafficSimulationApp() {
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.25);
       lastFrameRef.current = timestamp;
       runtime.engine.step(delta * timeScale);
+      updateTrafficLightTimers(
+        trafficLightsRef.current,
+        runtime.engine.currentTime,
+        setTrafficLights,
+        trafficLightsRef
+      );
+      enforceTrafficLights(runtime.engine, trafficLightsRef.current);
       drawScene(
         canvas,
         runtime.engine,
@@ -1811,7 +2067,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
 
       hudAccumulatorRef.current += delta;
@@ -1838,11 +2095,14 @@ export default function TrafficSimulationApp() {
         frameCountRef.current = 0;
       }
 
+      if (!isRunningRef.current) return;
       rafRef.current = requestAnimationFrame(tick);
     };
 
+    lastFrameRef.current = performance.now();
     rafRef.current = requestAnimationFrame(tick);
     return () => {
+      isRunningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges]);
@@ -1861,7 +2121,14 @@ export default function TrafficSimulationApp() {
       const absDeltaX = Math.abs(event.deltaX);
       const isTrackpadLike =
         event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && absDeltaX < 50 && absDeltaY < 50;
-      const wantsZoom = event.ctrlKey || event.metaKey || (!isTrackpadLike && absDeltaY > absDeltaX);
+      const wantsZoom =
+        event.ctrlKey ||
+        event.metaKey ||
+        inputMode === 'trackpad' ||
+        (!isTrackpadLike && absDeltaY > absDeltaX);
+
+      const zoomStep = inputMode === 'trackpad' ? 0.0025 : 0.001;
+      const panScale = inputMode === 'trackpad' ? 1.8 : 1;
 
       if (wantsZoom) {
         const rect = canvas.getBoundingClientRect();
@@ -1874,7 +2141,7 @@ export default function TrafficSimulationApp() {
           y: (cursor.y - view.offsetY) / view.scale,
         };
 
-        const zoomFactor = Math.exp(-event.deltaY * 0.001);
+        const zoomFactor = Math.exp(-event.deltaY * zoomStep);
         const newScale = clamp(view.scale * zoomFactor, MIN_ZOOM_SLIDER, MAX_ZOOM_SLIDER);
 
         viewRef.current = {
@@ -1886,8 +2153,8 @@ export default function TrafficSimulationApp() {
       } else {
         viewRef.current = {
           ...view,
-          offsetX: view.offsetX - event.deltaX,
-          offsetY: view.offsetY - event.deltaY,
+          offsetX: view.offsetX - event.deltaX * panScale,
+          offsetY: view.offsetY - event.deltaY * panScale,
         };
       }
 
@@ -1900,7 +2167,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -1909,7 +2177,7 @@ export default function TrafficSimulationApp() {
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
-  }, [canvasReady]);
+  }, [canvasReady, inputMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1917,7 +2185,13 @@ export default function TrafficSimulationApp() {
     canvas.style.cursor = 'grab';
 
     const beginPan = (event: PointerEvent) => {
-      if (spawnPointPlacementMode || obstaclePlacementMode || obstacleRemovalMode) return;
+      if (
+        spawnPointPlacementMode ||
+        obstaclePlacementMode ||
+        obstacleRemovalMode ||
+        trafficLightPlacementMode
+      )
+        return;
       if (event.button !== 0 && event.button !== 1) return;
       const view = viewRef.current;
       if (!view) return;
@@ -1954,7 +2228,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -1984,7 +2259,7 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode]);
+  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1997,11 +2272,42 @@ export default function TrafficSimulationApp() {
         setSpawnPointPlacementMode(false);
         setObstaclePlacementMode(false);
         setObstacleRemovalMode(false);
+        setTrafficLightPlacementMode(false);
         return;
       }
       const rect = canvas.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
+
+      if (trafficLightPlacementMode) {
+        const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
+        setSpawnPointPlacementMode(false);
+        if (!laneHit) {
+          setTrafficLightPlacementMode(false);
+          console.warn('No lane found near click for traffic light');
+          return;
+        }
+        const proj = projectAlongLane(laneHit.lane, laneHit.s);
+        const tl: TrafficLight = {
+          id: `tl_${Date.now()}`,
+          position: proj.position,
+          heading: proj.heading,
+          laneId: laneHit.lane.id,
+          lanePosition: laneHit.s,
+          state: 'green',
+          timerSeconds: trafficLightTimer,
+          nextSwitchTime:
+            trafficLightTimer > 0 && runtime.engine ? runtime.engine.currentTime + trafficLightTimer : Infinity,
+        };
+        setTrafficLights(prev => {
+          const next = [...prev, tl];
+          trafficLightsRef.current = next;
+          return next;
+        });
+        setTrafficLightPlacementMode(false);
+        requestRedrawRef.current.fn();
+        return;
+      }
 
       if (obstaclePlacementMode || obstacleRemovalMode) {
         const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
@@ -2017,19 +2323,77 @@ export default function TrafficSimulationApp() {
           addObstacleToLane(runtime.engine, laneHit.lane, laneHit.s);
           setObstaclePlacementMode(false);
           setObstacleRemovalMode(false);
-          requestRedrawRef.current?.();
+          requestRedrawRef.current.fn();
           return;
         }
 
         if (obstacleRemovalMode) {
+          // First try to remove a nearby traffic light
+          const viewLocal = viewRef.current;
+          if (viewLocal && trafficLightsRef.current.length > 0) {
+            const hitLightIndex = trafficLightsRef.current.findIndex(tl => {
+              const screenTL = worldToScreen(viewLocal, tl.position);
+              const dx = screenTL.x - x;
+              const dy = screenTL.y - y;
+              return dx * dx + dy * dy < 14 * 14;
+            });
+            if (hitLightIndex >= 0) {
+              const next = trafficLightsRef.current.slice();
+              next.splice(hitLightIndex, 1);
+              trafficLightsRef.current = next;
+              setTrafficLights(next);
+              setObstacleRemovalMode(false);
+              requestRedrawRef.current.fn();
+              return;
+            }
+          }
+
           const removed = removeObstacleAt(runtime.engine, laneHit.lane, laneHit.s);
           setObstacleRemovalMode(false);
-          requestRedrawRef.current?.();
+          requestRedrawRef.current.fn();
           if (!removed) {
             console.warn('No obstacle found to remove near click');
           }
           return;
         }
+      }
+
+      // Toggle traffic light if clicked
+      const clickedLight = (() => {
+        const viewLocal = viewRef.current;
+        if (!viewLocal) return undefined;
+        let nearest: TrafficLight | undefined;
+        let bestDist = Infinity;
+        for (const tl of trafficLightsRef.current) {
+          const screen = worldToScreen(viewLocal, tl.position);
+          const dx = screen.x - x;
+          const dy = screen.y - y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestDist && d2 < 12 * 12) {
+            bestDist = d2;
+            nearest = tl;
+          }
+        }
+        return nearest;
+      })();
+
+      if (clickedLight && runtime) {
+        setTrafficLights(prev => {
+          const next: TrafficLight[] = prev.map(tl =>
+            tl.id === clickedLight.id
+              ? {
+                  ...tl,
+                  state: (tl.state === 'green' ? 'red' : 'green') as TrafficLightState,
+                  nextSwitchTime:
+                    tl.timerSeconds > 0 ? runtime.engine.currentTime + tl.timerSeconds : Infinity,
+                }
+              : tl
+          );
+          trafficLightsRef.current = next;
+          return next;
+        });
+        requestRedrawRef.current.fn();
+        return;
       }
 
       if (spawnPointPlacementMode) {
@@ -2070,7 +2434,7 @@ export default function TrafficSimulationApp() {
     return () => {
       canvas.removeEventListener('click', handleClick);
     };
-  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, applySelection]);
+  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, applySelection]);
 
   const spawnVehicle = () => {
     const runtime = runtimeRef.current;
@@ -2193,362 +2557,624 @@ export default function TrafficSimulationApp() {
     setIsRunning(true);
   };
 
-  const renderStat = (label: string, value: string) => (
-    <div className="flex justify-between text-sm text-slate-200">
-      <span className="text-slate-400">{label}</span>
-      <span className="font-mono">{value}</span>
-    </div>
-  );
+  const networkSnapshot = runtimeRef.current
+    ? {
+        nodes: runtimeRef.current.network.nodes.size,
+        edges: runtimeRef.current.network.edges.size,
+        lanes: runtimeRef.current.network.lanes.size,
+      }
+    : { nodes: 0, edges: 0, lanes: 0 };
+
+  const statCollections: Record<
+    StatMode,
+    { label: string; value: string; accent?: boolean }[]
+  > = {
+    basic: [
+      { label: 'Sim time', value: `${hud.time.toFixed(1)} s` },
+      { label: 'Vehicles', value: `${hud.vehicles}` },
+      { label: 'Render FPS', value: `${hud.fps.toFixed(0)}` },
+    ],
+    extended: [
+      { label: 'Avg speed', value: `${(hud.avgSpeed * 3.6).toFixed(1)} km/h` },
+      { label: 'Zoom', value: `${zoomLevel.toFixed(2)}x` },
+      { label: 'Spawn points', value: `${spawnPointsRef.current.length}` },
+      { label: 'Time scale', value: `${timeScale.toFixed(2)}x` },
+    ],
+    advanced: [
+      { label: 'Nodes', value: `${networkSnapshot.nodes}` },
+      { label: 'Edges', value: `${networkSnapshot.edges}` },
+      { label: 'Lanes', value: `${networkSnapshot.lanes}` },
+      { label: 'Chunks', value: `${dynamicChunksRef.current.size}` },
+    ],
+  };
+
+  const statsForMode = statCollections[statModes[statModeIndex]];
+
+  const handleModeCycle = () => {
+    setStatModeIndex(i => (i + 1) % statModes.length);
+  };
+
+  const handlePanelPress = (clientY: number) => {
+    swipeStartRef.current = clientY;
+  };
+
+  const handlePanelRelease = (clientY: number) => {
+    if (swipeStartRef.current === null) return;
+    const delta = swipeStartRef.current - clientY;
+    if (delta > 24) {
+      setPanelOpen(true);
+    } else if (delta < -24) {
+      setPanelOpen(false);
+    } else {
+      setPanelOpen(open => !open);
+    }
+    swipeStartRef.current = null;
+  };
 
   return (
-    <div className="w-full h-screen bg-slate-900 text-white grid grid-cols-[320px_1fr]">
-      <div className="border-r border-slate-800 bg-slate-950/70 p-4 space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded bg-gradient-to-br from-emerald-400/30 to-cyan-400/20">
-            <Zap className="text-emerald-300" size={24} />
-          </div>
-          <div>
-            <div className="text-lg font-semibold">Traffic Simulation</div>
-            <div className="text-xs text-slate-400">IDM + MOBIL - 60 FPS renderer</div>
-          </div>
-        </div>
+    <div className="relative w-full h-screen overflow-hidden bg-[#050505] text-white">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,121,48,0.08),transparent_35%),radial-gradient(circle_at_80%_10%,rgba(255,121,48,0.06),transparent_30%),linear-gradient(135deg,rgba(255,121,48,0.04),transparent)]" />
+        <div className="absolute top-10 right-10 w-40 h-40 bg-orange-500/10 blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-72 h-72 bg-orange-500/10 blur-3xl" />
+      </div>
 
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Scenario</div>
-          <select
-            value={scenario}
-            onChange={e => setScenario(e.target.value as ScenarioKey)}
-            className="w-full rounded bg-slate-800 border border-slate-700 px-3 py-2"
-          >
-            <option value="simple_highway">Highway with ramps</option>
-            <option value="urban_intersection">Signalized intersection</option>
-            <option value="roundabout">Four-arm roundabout</option>
-            <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
-            <option value="test_perchance">Test Perchance (full)</option>
-          </select>
-        </div>
+      <canvas ref={attachCanvasRef} className="w-full h-full" />
 
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Find street</div>
-          <div className="flex gap-2">
-            <input
-              value={streetQuery}
-              onChange={e => setStreetQuery(e.target.value)}
-              list="street-suggestions"
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  searchStreetInView();
-                }
-              }}
-              placeholder="Street name"
-              className="flex-1 rounded bg-slate-800 border border-slate-700 px-3 py-2 text-sm"
-            />
-            <button
-              onClick={searchStreetInView}
-              className="rounded bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
-            >
-              Go
-            </button>
-            <datalist id="street-suggestions">
-              {streetSuggestions.map(name => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
+      <div className="absolute left-4 top-1/2 -translate-y-1/2 z-20 max-w-[320px]">
+        <div className="rounded-3xl bg-black/75 backdrop-blur-xl border border-orange-500/25 shadow-[0_20px_50px_rgba(0,0,0,0.45)] px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.25em] text-orange-200/80">
+            <span>Stats</span>
+            <span className="text-white">{statModes[statModeIndex]}</span>
           </div>
-          <p className="text-xs text-slate-400">
-            Searches visible area, zooms to the first match and selects it.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Simulation</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setIsRunning(prev => !prev)}
-              className="flex items-center justify-center gap-2 rounded bg-emerald-600 hover:bg-emerald-500 px-3 py-2"
-            >
-              {isRunning ? <Pause size={16} /> : <Play size={16} />}
-              {isRunning ? 'Pause' : 'Resume'}
-            </button>
-            <button
-              onClick={handleReset}
-              className="flex items-center justify-center gap-2 rounded bg-slate-800 hover:bg-slate-700 px-3 py-2"
-            >
-              <RotateCcw size={16} /> Reset
-            </button>
-            <button
-              onClick={handleAddVehicle}
-              className="flex items-center justify-center gap-2 rounded bg-cyan-600 hover:bg-cyan-500 px-3 py-2 col-span-2"
-            >
-              <Plus size={16} /> Inject vehicle
-            </button>
-            <button
-              onClick={() => handleAddVehiclesBulk(bulkCount)}
-              className="flex items-center justify-center gap-2 rounded bg-cyan-700 hover:bg-cyan-600 px-3 py-2 col-span-2"
-            >
-              <Plus size={16} /> Inject {bulkCount} vehicles
-            </button>
-            <div className="col-span-2 text-xs text-slate-300 flex items-center gap-2">
-              <label className="text-slate-400">Bulk count</label>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={bulkCount}
-                onChange={e => setBulkCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
-                className="w-16 rounded bg-slate-800 border border-slate-700 px-2 py-1 text-right"
-              />
-            </div>
-            <button
-              onClick={() => setSpawnPointPlacementMode(true)}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                spawnPointPlacementMode
-                  ? 'bg-emerald-500 text-slate-900'
-                  : 'bg-emerald-700 hover:bg-emerald-600'
-              }`}
-            >
-              <Plus size={16} /> Set Spawn Point
-            </button>
-            <button
-              onClick={() => {
-                setSpawnPointPlacementMode(false);
-                setObstacleRemovalMode(false);
-                setObstaclePlacementMode(true);
-              }}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                obstaclePlacementMode
-                  ? 'bg-orange-400 text-slate-900'
-                  : 'bg-orange-600 hover:bg-orange-500'
-              }`}
-            >
-              <Plus size={16} /> Place obstacle
-            </button>
-            <button
-              onClick={() => {
-                setSpawnPointPlacementMode(false);
-                setObstaclePlacementMode(false);
-                setObstacleRemovalMode(true);
-              }}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                obstacleRemovalMode
-                  ? 'bg-amber-400 text-slate-900'
-                  : 'bg-amber-700 hover:bg-amber-600'
-              }`}
-            >
-              <Minus size={16} /> Remove obstacle
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded bg-slate-800">
-              <Gauge size={18} />
-            </div>
-            <div className="flex-1">
-              <div className="flex justify-between text-xs text-slate-400">
-                <span>Time scale</span>
-                <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
-              </div>
-              <div className="flex items-center gap-2 mt-1">
-                <button
-                  onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
-                  className="p-2 rounded bg-slate-800 hover:bg-slate-700"
-                >
-                  <Minus size={14} />
-                </button>
-                <div className="flex-1 h-1 rounded bg-slate-800">
-                  <div
-                    className="h-full rounded bg-emerald-400"
-                    style={{ width: `${(Math.min(timeScale, 3) / 3) * 100}%` }}
-                  />
-                </div>
-                <button
-                  onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
-                  className="p-2 rounded bg-slate-800 hover:bg-slate-700"
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>Zoom</span>
-              <span className="font-mono text-white">{zoomLevel.toFixed(2)}x</span>
-            </div>
-            <input
-              type="range"
-              min={MIN_ZOOM_SLIDER}
-              max={MAX_ZOOM_SLIDER}
-              step={0.05}
-              value={zoomLevel}
-              onChange={e => applyZoom(parseFloat(e.target.value))}
-              className="w-full"
-            />
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Telemetry</div>
-          <div className="rounded border border-slate-800 bg-slate-900 p-3 space-y-2">
-            {renderStat('Sim time', `${hud.time.toFixed(1)} s`)}
-            {renderStat('Vehicles', `${hud.vehicles}`)}
-            {renderStat('Avg speed', `${(hud.avgSpeed * 3.6).toFixed(1)} km/h`)}
-            {renderStat('Render FPS', `${hud.fps.toFixed(0)} fps`)}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Legend</div>
-          <div className="grid grid-cols-2 gap-2 text-xs text-slate-300">
-            {Object.values(DEFAULT_VEHICLE_TYPES).map(type => (
-              <div key={type.category} className="flex items-center gap-2">
-                <span
-                  className="w-4 h-4 rounded-sm border border-slate-800"
-                  style={{ backgroundColor: type.color }}
-                />
-                <span className="capitalize">{type.category.toLowerCase()}</span>
+          <div className="space-y-1 transition-all duration-300">
+            {statsForMode.map(item => (
+              <div key={item.label} className="flex justify-between text-sm">
+                <span className="text-orange-100/70">{item.label}</span>
+                <span className="font-mono text-white">{item.value}</span>
               </div>
             ))}
           </div>
         </div>
-
-        <button
-          onClick={() => setShowHud(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showHud ? 'Hide' : 'Show'} on-canvas stats
-        </button>
-
-        <button
-          onClick={() => setShowBackdrop(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showBackdrop ? 'Hide' : 'Show'} map details
-        </button>
-
-        <button
-          onClick={() => setShowRoadEdges(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showRoadEdges ? 'Hide' : 'Show'} road edges
-        </button>
       </div>
 
-      <div className="relative bg-slate-950">
-        <canvas ref={attachCanvasRef} className="w-full h-full" />
-        {showHud && (
-          <div className="absolute top-4 right-4 bg-slate-900/80 backdrop-blur rounded border border-slate-800 px-4 py-3 text-sm space-y-1">
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">t</span>
-              <span className="font-mono">{hud.time.toFixed(1)} s</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">n</span>
-              <span className="font-mono">{hud.vehicles}</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">v_avg</span>
-              <span className="font-mono">{(hud.avgSpeed * 3.6).toFixed(1)} km/h</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">fps</span>
-              <span className="font-mono">{hud.fps.toFixed(0)}</span>
+      <div className="absolute top-6 right-6 flex flex-col items-end gap-3 z-30">
+        <button
+          onClick={handleModeCycle}
+          className="w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-orange-600 shadow-[0_10px_30px_rgba(255,121,48,0.35)] flex items-center justify-center border border-orange-400/40 hover:scale-[1.04] active:scale-[0.98] transition"
+          aria-label="Cycle stat modes"
+        >
+          <Sparkles className="text-black drop-shadow" size={22} />
+        </button>
+
+        <div className="relative">
+          <button
+            onClick={() => setToolsOpen(open => !open)}
+            className="w-14 h-14 rounded-full bg-black/80 border border-orange-500/40 shadow-[0_10px_30px_rgba(0,0,0,0.45)] flex items-center justify-center hover:border-orange-400 hover:text-orange-200 transition"
+            aria-label="Toggle tools drawer"
+          >
+            <Zap size={20} className="text-orange-300" />
+          </button>
+          <div
+            className={`absolute right-0 mt-3 origin-top-right transition-all duration-300 ${
+              toolsOpen
+                ? 'opacity-100 scale-100 translate-y-0'
+                : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'
+            }`}
+          >
+            <div className="rounded-3xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] overflow-hidden">
+              {[
+                {
+                  key: 'spawn',
+                  label: 'Spawn Point',
+                  icon: MapPin,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(true);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(false);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'place',
+              label: 'Place Obstacle',
+              icon: Shield,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstacleRemovalMode(false);
+                setObstaclePlacementMode(true);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'remove',
+              label: 'Remove Obstacle',
+              icon: Eraser,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(true);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'light',
+              label: 'Traffic Light',
+              icon: TrafficCone,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(false);
+                setTrafficLightPlacementMode(true);
+              },
+            },
+            {
+              key: 'roads',
+              label: 'Add New Roads',
+                  icon: GitBranchPlus,
+                  action: () => setShowBackdrop(true),
+                },
+              ].map((tool, idx) => {
+                const Icon = tool.icon;
+                return (
+                  <button
+                    key={tool.key}
+                    onClick={() => {
+                      tool.action();
+                      setToolsOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 w-full text-left text-sm hover:bg-orange-500/10 transition ${
+                      idx !== 0 ? 'border-t border-orange-500/15' : ''
+                    }`}
+                  >
+                    <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
+                      <Icon size={16} className="text-orange-200" />
+                    </div>
+                    <span className="text-white">{tool.label}</span>
+                  </button>
+                );
+              })}
+              <div className="border-t border-orange-500/15 bg-black/70 px-4 py-3 text-xs text-orange-100/80 flex items-center gap-2">
+                <span>Light timer (s)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={trafficLightTimer}
+                  onChange={e =>
+                    setTrafficLightTimer(
+                      Math.max(0, Math.min(300, Number(e.target.value) || 0))
+                    )
+                  }
+                  className="w-16 rounded bg-slate-900 border border-orange-500/40 px-2 py-1 text-right text-white"
+                />
+                <span className="text-orange-300 text-[10px]">(0 = manual)</span>
+              </div>
             </div>
           </div>
-        )}
-        {selection && (selectedNode || selectedEdge) && (
-          <div className="absolute bottom-4 right-4 w-80 max-h-[70vh] overflow-hidden rounded border border-slate-800 bg-slate-900/90 backdrop-blur p-4 shadow-lg text-sm text-slate-100 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-slate-400">
-                  Selected type: {selection.type === 'node' ? 'Node' : 'Edge'}
+        </div>
+      </div>
+
+      <div className="absolute left-6 right-6 sm:right-auto sm:w-[460px] max-w-[560px] bottom-6 z-30">
+        <div
+          className={`relative overflow-hidden rounded-[24px] border border-orange-500/25 bg-black/80 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.55)] transition-all duration-500 ${
+            panelOpen ? 'max-h-[82vh]' : 'max-h-[240px]'
+          }`}
+        >
+          <div className="absolute inset-0 bg-gradient-to-br from-orange-500/12 via-black/40 to-black/80 pointer-events-none" />
+          <div className="relative p-4 pt-6 min-h-[200px]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl border border-orange-500/40 bg-gradient-to-br from-orange-500/30 to-orange-500/10 flex items-center justify-center shadow-[0_10px_40px_rgba(255,121,48,0.25)]">
+                  <span className="text-lg font-semibold text-white tracking-wide">TF</span>
                 </div>
-                <div className="font-mono text-slate-100 text-xs break-all">
-                  {selection.id}
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-orange-200/70">
+                    Simulation Suite
+                  </div>
+                  {panelOpen ? (
+                    <div className="text-2xl font-semibold leading-tight">
+                      <span className="text-white">Tra</span>
+                      <span className="text-orange-400">Fixed</span>
+                    </div>
+                  ) : (
+                    <div className="text-xl font-semibold text-white leading-tight">
+                      Traffic Simulation
+                    </div>
+                  )}
                 </div>
               </div>
               <button
-                className="text-xs text-slate-300 hover:text-white"
-                onClick={() => applySelection(undefined)}
+                onClick={() => setPanelOpen(open => !open)}
+                className="w-11 h-11 rounded-2xl border border-orange-500/30 bg-orange-500/15 text-orange-200 flex items-center justify-center hover:bg-orange-500/25 transition"
+                aria-label="Toggle controls"
               >
-                Clear
+                <ChevronUp
+                  className={`transition-transform duration-300 ${panelOpen ? 'rotate-180' : ''}`}
+                />
               </button>
             </div>
 
-            {selection.type === 'edge' && selectedStats && (
-              <div className="space-y-1 text-xs text-slate-300">
-                <div className="flex justify-between">
-                  <span>Length</span>
-                  <span className="font-mono text-white">{selectedStats.length.toFixed(1)} m</span>
+            <div
+              className={`absolute left-4 right-4 transition-all duration-500 ${
+                panelOpen ? 'top-[80px]' : 'bottom-4'
+              }`}
+            >
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      Cars
+                    </div>
+                    <div className="text-lg font-semibold">{hud.vehicles}</div>
+                  </div>
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      FPS
+                    </div>
+                    <div className="text-lg font-semibold">{hud.fps.toFixed(0)}</div>
+                  </div>
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      Speed
+                    </div>
+                    <div className="text-lg font-semibold">
+                      {(hud.avgSpeed * 3.6).toFixed(1)} km/h
+                    </div>
+                  </div>
                 </div>
-                {selectedStats.speedLimit && (
-                  <div className="flex justify-between">
-                    <span>Speed limit</span>
-                    <span className="font-mono text-white">
-                      {(selectedStats.speedLimit * 3.6).toFixed(0)} km/h
-                    </span>
+
+                <div className="flex items-center gap-2 rounded-2xl bg-[#0b0b0f] border border-orange-500/30 px-3 py-2 shadow-inner">
+                  <Search size={16} className="text-orange-300" />
+                  <input
+                    value={streetQuery}
+                    onChange={e => setStreetQuery(e.target.value)}
+                    list="street-suggestions"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        searchStreetInView();
+                      }
+                    }}
+                    placeholder="Search visible streets"
+                    className="flex-1 bg-transparent outline-none text-sm placeholder:text-orange-100/50"
+                  />
+                  <button
+                    onClick={() => setIsRunning(prev => !prev)}
+                    className="flex items-center gap-1 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-medium shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                  >
+                    {isRunning ? <Pause size={14} /> : <Play size={14} />}
+                    <span>{isRunning ? 'Pause' : 'Play'}</span>
+                  </button>
+                </div>
+                <datalist id="street-suggestions">
+                  {streetSuggestions.map(name => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div
+              className={`transition-all duration-500 ${
+                panelOpen
+                  ? 'opacity-100 translate-y-0 pt-36 space-y-4'
+                  : 'opacity-0 -translate-y-2 pointer-events-none h-0 overflow-hidden'
+              }`}
+            >
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
+                  <select
+                    value={scenario}
+                    onChange={e => setScenario(e.target.value as ScenarioKey)}
+                    className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                  >
+                    <option value="simple_highway">Highway with ramps</option>
+                    <option value="urban_intersection">Signalized intersection</option>
+                    <option value="roundabout">Four-arm roundabout</option>
+                    <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+                    <option value="test_perchance">Test Perchance (full)</option>
+                  </select>
+                  <p className="text-[11px] text-orange-100/70">
+                    Swiping up reveals advanced tuning without leaving the viewport.
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                    <span>Time scale</span>
+                    <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
                   </div>
-                )}
-                {selectedStats.travelMinutes && (
-                  <div className="flex justify-between">
-                    <span>Est. travel time</span>
-                    <span className="font-mono text-white">
-                      {selectedStats.travelMinutes.toFixed(1)} min
-                    </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
+                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="range"
+                      min={0.25}
+                      max={4}
+                      step={0.05}
+                      value={timeScale}
+                      onChange={e => setTimeScale(parseFloat(e.target.value))}
+                      className="flex-1 accent-orange-500"
+                    />
+                    <button
+                      onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
+                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
+                    >
+                      <Plus size={14} />
+                    </button>
                   </div>
-                )}
-                {selectedStats.lanes && (
-                  <div className="flex justify-between">
-                    <span>Lanes</span>
-                    <span className="font-mono text-white">{selectedStats.lanes}</span>
+                  <div className="flex items-center justify-between text-xs text-orange-100/80">
+                    <span>Input</span>
+                    <button
+                      onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
+                      className="px-3 py-2 rounded-xl bg-orange-500/15 border border-orange-500/30 text-sm hover:border-orange-400 transition"
+                    >
+                      {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
+                    </button>
                   </div>
-                )}
-                <div className="flex justify-between items-center">
-                  <span>Direction</span>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={handleReset}
+                      className="flex-1 min-w-[140px] rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={handleAddVehicle}
+                      className="flex-1 min-w-[140px] rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                    >
+                      + Inject 1
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={bulkCount}
+                      onChange={e =>
+                        setBulkCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))
+                      }
+                      className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                    />
+                    <button
+                      onClick={() => handleAddVehiclesBulk(bulkCount)}
+                      className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                    >
+                      Inject {bulkCount}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(true);
+                        setObstaclePlacementMode(false);
+                        setObstacleRemovalMode(false);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        spawnPointPlacementMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Spawn point
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(false);
+                        setObstacleRemovalMode(false);
+                        setObstaclePlacementMode(true);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        obstaclePlacementMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Place obstacle
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(false);
+                        setObstaclePlacementMode(false);
+                        setObstacleRemovalMode(true);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        obstacleRemovalMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Remove obstacle
+                    </button>
+                    <button
+                      onClick={() => setShowRoadEdges(v => !v)}
+                      className="rounded-xl px-3 py-2 border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                    >
+                      {showRoadEdges ? 'Hide edges' : 'Show edges'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setShowHud(v => !v)}
+                  className={`rounded-full px-4 py-2 text-sm border transition ${
+                    showHud
+                      ? 'border-orange-400 bg-orange-500/20'
+                      : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                  }`}
+                >
+                  {showHud ? 'Hide HUD' : 'Show HUD'}
+                </button>
+                <button
+                  onClick={() => setShowBackdrop(v => !v)}
+                  className={`rounded-full px-4 py-2 text-sm border transition ${
+                    showBackdrop
+                      ? 'border-orange-400 bg-orange-500/20'
+                      : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                  }`}
+                >
+                  {showBackdrop ? 'Hide map detail' : 'Show map detail'}
+                </button>
+                <select
+                  value={backdropTheme}
+                  onChange={e => setBackdropTheme(e.target.value as keyof typeof BACKDROP_THEMES)}
+                  className="rounded-full px-3 py-2 text-sm border border-orange-500/25 bg-black/70 hover:border-orange-400 transition text-orange-100"
+                >
+                  <option value="osm">OSM Standard</option>
+                  <option value="light">Light (Carto)</option>
+                  <option value="dark">Dark (Carto)</option>
+                </select>
+                <button
+                  onClick={() => applyZoom(1)}
+                  className="rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                >
+                  Reset zoom
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative px-4 pb-3">
+            <button
+              className="w-full flex items-center justify-center gap-3 text-xs uppercase tracking-[0.25em] text-orange-200/80 py-2"
+              onPointerDown={e => handlePanelPress(e.clientY)}
+              onPointerUp={e => handlePanelRelease(e.clientY)}
+              onPointerCancel={() => (swipeStartRef.current = null)}
+              onTouchStart={e => handlePanelPress(e.touches[0].clientY)}
+              onTouchEnd={e => handlePanelRelease(e.changedTouches[0].clientY)}
+              aria-label="Swipe handle"
+            >
+              <span className="h-1.5 w-16 rounded-full bg-orange-400/60" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {showHud && (
+        <div className="absolute top-5 right-24 bg-black/70 backdrop-blur-xl border border-orange-500/25 rounded-3xl px-4 py-3 text-sm space-y-1 shadow-[0_15px_40px_rgba(0,0,0,0.45)]">
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">t</span>
+            <span className="font-mono">{hud.time.toFixed(1)} s</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">n</span>
+            <span className="font-mono">{hud.vehicles}</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">v_avg</span>
+            <span className="font-mono">{(hud.avgSpeed * 3.6).toFixed(1)} km/h</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">fps</span>
+            <span className="font-mono">{hud.fps.toFixed(0)}</span>
+          </div>
+        </div>
+      )}
+
+      {selection && (selectedNode || selectedEdge) && (
+        <div className="absolute bottom-4 right-4 w-80 max-h-[70vh] overflow-hidden rounded-3xl border border-orange-500/25 bg-black/85 backdrop-blur-xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.55)] text-sm text-orange-50 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-orange-200/80">
+                Selected type: {selection.type === 'node' ? 'Node' : 'Edge'}
+              </div>
+              <div className="font-mono text-orange-50 text-xs break-all">{selection.id}</div>
+            </div>
+            <button
+              className="text-xs text-orange-100 hover:text-white"
+              onClick={() => applySelection(undefined)}
+            >
+              Clear
+            </button>
+          </div>
+
+          {selection.type === 'edge' && selectedStats && (
+            <div className="space-y-1 text-xs text-orange-100/90">
+              <div className="flex justify-between">
+                <span>Length</span>
+                <span className="font-mono text-white">{selectedStats.length.toFixed(1)} m</span>
+              </div>
+              {selectedStats.speedLimit && (
+                <div className="flex justify-between">
+                  <span>Speed limit</span>
                   <span className="font-mono text-white">
-                    {selection.direction === 'forward' ? '→ forward' : '← backward'}
+                    {(selectedStats.speedLimit * 3.6).toFixed(0)} km/h
                   </span>
                 </div>
+              )}
+              {selectedStats.travelMinutes && (
+                <div className="flex justify-between">
+                  <span>Est. travel time</span>
+                  <span className="font-mono text-white">
+                    {selectedStats.travelMinutes.toFixed(1)} min
+                  </span>
+                </div>
+              )}
+              {selectedStats.lanes && (
+                <div className="flex justify-between">
+                  <span>Lanes</span>
+                  <span className="font-mono text-white">{selectedStats.lanes}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <span>Direction</span>
+                <span className="font-mono text-white">
+                  {selection.direction === 'forward' ? '→ forward' : '← backward'}
+                </span>
               </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() =>
-                  selection &&
-                  copyJSON(selection.type === 'node' ? selectedNode : selectedEdge)
-                }
-                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
-              >
-                Copy JSON
-              </button>
-              <button
-                onClick={() => {
-                  if (!selection) return;
-                  const data = selection.type === 'node' ? selectedNode : selectedEdge;
-                  if (!data) return;
-                  const filename = `${selection.type}_${selection.id}.json`;
-                  downloadJSON(filename, data);
-                }}
-                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
-              >
-                Download JSON
-              </button>
             </div>
+          )}
 
-            <div className="rounded bg-slate-950 border border-slate-800 p-2 text-xs text-slate-200 max-h-48 overflow-auto">
-              <pre className="whitespace-pre-wrap font-mono text-[11px] leading-snug">
-                {selectedJSON}
-              </pre>
-            </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() =>
+                selection && copyJSON(selection.type === 'node' ? selectedNode : selectedEdge)
+              }
+              className="flex-1 rounded-xl bg-white/5 hover:bg-orange-500/10 px-2 py-2 text-xs text-orange-50 border border-orange-500/25 transition"
+            >
+              Copy JSON
+            </button>
+            <button
+              onClick={() => {
+                if (!selection) return;
+                const data = selection.type === 'node' ? selectedNode : selectedEdge;
+                if (!data) return;
+                const filename = `${selection.type}_${selection.id}.json`;
+                downloadJSON(filename, data);
+              }}
+              className="flex-1 rounded-xl bg-white/5 hover:bg-orange-500/10 px-2 py-2 text-xs text-orange-50 border border-orange-500/25 transition"
+            >
+              Download JSON
+            </button>
           </div>
-        )}
-      </div>
+
+          <div className="rounded-2xl bg-black/70 border border-orange-500/20 p-2 text-xs text-orange-100 max-h-48 overflow-auto">
+            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-snug">
+              {selectedJSON}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
