@@ -282,6 +282,41 @@ function computeEdgeStats(network: RoadNetworkImpl, edgeId: string) {
   return { length, speedLimit: speedVal, travelMinutes, lanes };
 }
 
+function parseMaxspeed(tags: Record<string, string | undefined> = {}): number | undefined {
+  const raw =
+    tags['maxspeed:forward'] ||
+    tags['maxspeed:backward'] ||
+    tags['maxspeed'];
+  if (!raw) return undefined;
+
+  const val = raw.trim().toLowerCase();
+  // Common textual values we ignore for now
+  if (!val || ['signals', 'variable', 'none', 'national', 'unlimited'].includes(val)) {
+    return undefined;
+  }
+
+  // Handle mph or km/h suffix
+  const mphMatch = val.match(/^(\d+)\s*mph$/);
+  if (mphMatch) {
+    const mph = Number(mphMatch[1]);
+    return isFinite(mph) ? mph * 0.44704 : undefined; // convert to m/s
+  }
+
+  const kmhMatch = val.match(/^(\d+)\s*(km\/h)?$/);
+  if (kmhMatch) {
+    const kmh = Number(kmhMatch[1]);
+    return isFinite(kmh) ? (kmh / 3.6) : undefined; // convert to m/s
+  }
+
+  const numeric = Number(val);
+  if (isFinite(numeric)) {
+    // Assume km/h if no unit
+    return numeric / 3.6;
+  }
+
+  return undefined;
+}
+
 function downloadJSON(filename: string, data: any) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
@@ -1043,20 +1078,22 @@ function drawScene(
     }
   }
 
-  // Traffic lights
-  for (const tl of trafficLights) {
-    const screen = worldToScreen(view, tl.position);
-    ctx.save();
-    ctx.translate(screen.x, screen.y);
-    ctx.rotate(tl.heading);
-    ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.rect(-6, -10, 12, 20);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
+  // Traffic lights (only show when roads are shown)
+  if (!hideRoads) {
+    for (const tl of trafficLights) {
+      const screen = worldToScreen(view, tl.position);
+      ctx.save();
+      ctx.translate(screen.x, screen.y);
+      ctx.rotate(tl.heading);
+      ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(-6, -10, 12, 20);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   if (selection && network) {
@@ -1160,7 +1197,7 @@ function overpassToNetworkJSON(
     if (geometry.length < 2) continue;
 
     const laneCount = Math.max(1, parseInt(tags.lanes ?? '1', 10));
-    const speedLimit = tags.maxspeed ? parseInt(tags.maxspeed, 10) : undefined;
+    const speedLimit = parseMaxspeed(tags);
     const edgeId = `chunk_${chunkKey}_way_${way.id}`;
 
     edges.push({
@@ -1241,12 +1278,13 @@ function mergeNetworkFromJSON(target: RoadNetworkImpl, fragmentJSON: NetworkJSON
       }
     }
     target.addEdge(edge);
-    if (edgeData.speedLimit) {
-      for (const lane of edge.lanes) {
-        lane.speedLimit = edgeData.speedLimit;
+      if (edgeData.speedLimit) {
+        for (const lane of edge.lanes) {
+          lane.speedLimit = edgeData.speedLimit;
+          (lane as any).metadata = { ...(lane as any).metadata, speed_limit: edgeData.speedLimit };
+        }
       }
     }
-  }
 
   target.rebuildLaneConnectivity();
 }
