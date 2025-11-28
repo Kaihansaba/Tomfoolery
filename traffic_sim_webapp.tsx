@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, RotateCcw, Plus, Minus, Zap, Info, Gauge } from 'lucide-react';
+import { Play, Pause, Plus, Minus, Zap, ChevronUp, Search, Sparkles, MapPin, Shield, Eraser, GitBranchPlus } from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
 import { IDMModel, MOBILModel } from './traffic_sim_models';
@@ -65,6 +65,8 @@ interface HudState {
   avgSpeed: number;
   fps: number;
 }
+
+type StatMode = 'basic' | 'extended' | 'advanced';
 
 type BackdropContext = {
   network: RoadNetworkImpl;
@@ -1287,6 +1289,10 @@ export default function TrafficSimulationApp() {
     avgSpeed: 0,
     fps: 0,
   });
+  const statModes: StatMode[] = ['basic', 'extended', 'advanced'];
+  const [statModeIndex, setStatModeIndex] = useState(0);
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
   const [showHud, setShowHud] = useState(true);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
@@ -1298,6 +1304,7 @@ export default function TrafficSimulationApp() {
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
   const selectionRef = useRef<Selection | undefined>(undefined);
   const lastSuggestionUpdateRef = useRef(0);
+  const swipeStartRef = useRef<number | null>(null);
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -2123,371 +2130,584 @@ export default function TrafficSimulationApp() {
     setIsRunning(true);
   };
 
-  const renderStat = (label: string, value: string) => (
-    <div className="flex justify-between text-sm text-slate-200">
-      <span className="text-slate-400">{label}</span>
-      <span className="font-mono">{value}</span>
-    </div>
-  );
+  const networkSnapshot = runtimeRef.current
+    ? {
+        nodes: runtimeRef.current.network.nodes.size,
+        edges: runtimeRef.current.network.edges.size,
+        lanes: runtimeRef.current.network.lanes.size,
+      }
+    : { nodes: 0, edges: 0, lanes: 0 };
+
+  const statCollections: Record<
+    StatMode,
+    { label: string; value: string; accent?: boolean }[]
+  > = {
+    basic: [
+      { label: 'Sim time', value: `${hud.time.toFixed(1)} s` },
+      { label: 'Vehicles', value: `${hud.vehicles}` },
+      { label: 'Render FPS', value: `${hud.fps.toFixed(0)}` },
+    ],
+    extended: [
+      { label: 'Avg speed', value: `${(hud.avgSpeed * 3.6).toFixed(1)} km/h` },
+      { label: 'Zoom', value: `${zoomLevel.toFixed(2)}x` },
+      { label: 'Spawn points', value: `${spawnPointsRef.current.length}` },
+      { label: 'Time scale', value: `${timeScale.toFixed(2)}x` },
+    ],
+    advanced: [
+      { label: 'Nodes', value: `${networkSnapshot.nodes}` },
+      { label: 'Edges', value: `${networkSnapshot.edges}` },
+      { label: 'Lanes', value: `${networkSnapshot.lanes}` },
+      { label: 'Chunks', value: `${dynamicChunksRef.current.size}` },
+    ],
+  };
+
+  const statsForMode = statCollections[statModes[statModeIndex]];
+
+  const handleModeCycle = () => {
+    setStatModeIndex(i => (i + 1) % statModes.length);
+  };
+
+  const handlePanelPress = (clientY: number) => {
+    swipeStartRef.current = clientY;
+  };
+
+  const handlePanelRelease = (clientY: number) => {
+    if (swipeStartRef.current === null) return;
+    const delta = swipeStartRef.current - clientY;
+    if (delta > 24) {
+      setPanelOpen(true);
+    } else if (delta < -24) {
+      setPanelOpen(false);
+    } else {
+      setPanelOpen(open => !open);
+    }
+    swipeStartRef.current = null;
+  };
 
   return (
-    <div className="w-full h-screen bg-slate-900 text-white grid grid-cols-[320px_1fr]">
-      <div className="border-r border-slate-800 bg-slate-950/70 p-4 space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded bg-gradient-to-br from-emerald-400/30 to-cyan-400/20">
-            <Zap className="text-emerald-300" size={24} />
-          </div>
-          <div>
-            <div className="text-lg font-semibold">Traffic Simulation</div>
-            <div className="text-xs text-slate-400">IDM + MOBIL - 60 FPS renderer</div>
-          </div>
-        </div>
+    <div className="relative w-full h-screen overflow-hidden bg-[#050505] text-white">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,121,48,0.08),transparent_35%),radial-gradient(circle_at_80%_10%,rgba(255,121,48,0.06),transparent_30%),linear-gradient(135deg,rgba(255,121,48,0.04),transparent)]" />
+        <div className="absolute top-10 right-10 w-40 h-40 bg-orange-500/10 blur-3xl" />
+        <div className="absolute bottom-0 left-0 w-72 h-72 bg-orange-500/10 blur-3xl" />
+      </div>
 
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Scenario</div>
-          <select
-            value={scenario}
-            onChange={e => setScenario(e.target.value as ScenarioKey)}
-            className="w-full rounded bg-slate-800 border border-slate-700 px-3 py-2"
-          >
-            <option value="simple_highway">Highway with ramps</option>
-            <option value="urban_intersection">Signalized intersection</option>
-            <option value="roundabout">Four-arm roundabout</option>
-            <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
-            <option value="test_perchance">Test Perchance (full)</option>
-          </select>
-        </div>
+      <canvas ref={attachCanvasRef} className="w-full h-full" />
 
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Find street</div>
-          <div className="flex gap-2">
-            <input
-              value={streetQuery}
-              onChange={e => setStreetQuery(e.target.value)}
-              list="street-suggestions"
-              onKeyDown={e => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  searchStreetInView();
-                }
-              }}
-              placeholder="Street name"
-              className="flex-1 rounded bg-slate-800 border border-slate-700 px-3 py-2 text-sm"
-            />
-            <button
-              onClick={searchStreetInView}
-              className="rounded bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
-            >
-              Go
-            </button>
-            <datalist id="street-suggestions">
-              {streetSuggestions.map(name => (
-                <option key={name} value={name} />
-              ))}
-            </datalist>
+      <div className="absolute left-4 top-1/2 -translate-y-1/2 z-20 max-w-[320px]">
+        <div className="rounded-3xl bg-black/75 backdrop-blur-xl border border-orange-500/25 shadow-[0_20px_50px_rgba(0,0,0,0.45)] px-4 py-3 space-y-2">
+          <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.25em] text-orange-200/80">
+            <span>Stats</span>
+            <span className="text-white">{statModes[statModeIndex]}</span>
           </div>
-          <p className="text-xs text-slate-400">
-            Searches visible area, zooms to the first match and selects it.
-          </p>
-        </div>
-
-        <div className="space-y-3">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Simulation</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              onClick={() => setIsRunning(prev => !prev)}
-              className="flex items-center justify-center gap-2 rounded bg-emerald-600 hover:bg-emerald-500 px-3 py-2"
-            >
-              {isRunning ? <Pause size={16} /> : <Play size={16} />}
-              {isRunning ? 'Pause' : 'Resume'}
-            </button>
-            <button
-              onClick={handleReset}
-              className="flex items-center justify-center gap-2 rounded bg-slate-800 hover:bg-slate-700 px-3 py-2"
-            >
-              <RotateCcw size={16} /> Reset
-            </button>
-            <button
-              onClick={handleAddVehicle}
-              className="flex items-center justify-center gap-2 rounded bg-cyan-600 hover:bg-cyan-500 px-3 py-2 col-span-2"
-            >
-              <Plus size={16} /> Inject vehicle
-            </button>
-            <button
-              onClick={() => handleAddVehiclesBulk(bulkCount)}
-              className="flex items-center justify-center gap-2 rounded bg-cyan-700 hover:bg-cyan-600 px-3 py-2 col-span-2"
-            >
-              <Plus size={16} /> Inject {bulkCount} vehicles
-            </button>
-            <div className="col-span-2 text-xs text-slate-300 flex items-center gap-2">
-              <label className="text-slate-400">Bulk count</label>
-              <input
-                type="number"
-                min={1}
-                max={200}
-                value={bulkCount}
-                onChange={e => setBulkCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))}
-                className="w-16 rounded bg-slate-800 border border-slate-700 px-2 py-1 text-right"
-              />
-            </div>
-            <button
-              onClick={() => setSpawnPointPlacementMode(true)}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                spawnPointPlacementMode
-                  ? 'bg-emerald-500 text-slate-900'
-                  : 'bg-emerald-700 hover:bg-emerald-600'
-              }`}
-            >
-              <Plus size={16} /> Set Spawn Point
-            </button>
-            <button
-              onClick={() => {
-                setSpawnPointPlacementMode(false);
-                setObstacleRemovalMode(false);
-                setObstaclePlacementMode(true);
-              }}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                obstaclePlacementMode
-                  ? 'bg-orange-400 text-slate-900'
-                  : 'bg-orange-600 hover:bg-orange-500'
-              }`}
-            >
-              <Plus size={16} /> Place obstacle
-            </button>
-            <button
-              onClick={() => {
-                setSpawnPointPlacementMode(false);
-                setObstaclePlacementMode(false);
-                setObstacleRemovalMode(true);
-              }}
-              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
-                obstacleRemovalMode
-                  ? 'bg-amber-400 text-slate-900'
-                  : 'bg-amber-700 hover:bg-amber-600'
-              }`}
-            >
-              <Minus size={16} /> Remove obstacle
-            </button>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded bg-slate-800">
-              <Gauge size={18} />
-            </div>
-            <div className="flex-1">
-              <div className="flex justify-between text-xs text-slate-400">
-                <span>Time scale</span>
-                <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
-              </div>
-              <div className="flex items-center gap-2 mt-1">
-                <button
-                  onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
-                  className="p-2 rounded bg-slate-800 hover:bg-slate-700"
-                >
-                  <Minus size={14} />
-                </button>
-                <div className="flex-1 h-1 rounded bg-slate-800">
-                  <div
-                    className="h-full rounded bg-emerald-400"
-                    style={{ width: `${(Math.min(timeScale, 3) / 3) * 100}%` }}
-                  />
-                </div>
-                <button
-                  onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
-                  className="p-2 rounded bg-slate-800 hover:bg-slate-700"
-                >
-                  <Plus size={14} />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>Zoom</span>
-              <span className="font-mono text-white">{zoomLevel.toFixed(2)}x</span>
-            </div>
-            <input
-              type="range"
-              min={MIN_ZOOM_SLIDER}
-              max={MAX_ZOOM_SLIDER}
-              step={0.05}
-              value={zoomLevel}
-              onChange={e => applyZoom(parseFloat(e.target.value))}
-              className="w-full"
-            />
-            <div className="flex items-center justify-between text-xs text-slate-300 mt-2">
-              <span className="text-slate-400">Input mode</span>
-              <button
-                onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
-                className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
-              >
-                {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Telemetry</div>
-          <div className="rounded border border-slate-800 bg-slate-900 p-3 space-y-2">
-            {renderStat('Sim time', `${hud.time.toFixed(1)} s`)}
-            {renderStat('Vehicles', `${hud.vehicles}`)}
-            {renderStat('Avg speed', `${(hud.avgSpeed * 3.6).toFixed(1)} km/h`)}
-            {renderStat('Render FPS', `${hud.fps.toFixed(0)} fps`)}
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div className="text-sm uppercase tracking-wide text-slate-400">Legend</div>
-          <div className="grid grid-cols-2 gap-2 text-xs text-slate-300">
-            {Object.values(DEFAULT_VEHICLE_TYPES).map(type => (
-              <div key={type.category} className="flex items-center gap-2">
-                <span
-                  className="w-4 h-4 rounded-sm border border-slate-800"
-                  style={{ backgroundColor: type.color }}
-                />
-                <span className="capitalize">{type.category.toLowerCase()}</span>
+          <div className="space-y-1 transition-all duration-300">
+            {statsForMode.map(item => (
+              <div key={item.label} className="flex justify-between text-sm">
+                <span className="text-orange-100/70">{item.label}</span>
+                <span className="font-mono text-white">{item.value}</span>
               </div>
             ))}
           </div>
         </div>
-
-        <button
-          onClick={() => setShowHud(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showHud ? 'Hide' : 'Show'} on-canvas stats
-        </button>
-
-        <button
-          onClick={() => setShowBackdrop(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showBackdrop ? 'Hide' : 'Show'} map details
-        </button>
-
-        <button
-          onClick={() => setShowRoadEdges(v => !v)}
-          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
-        >
-          <Info size={14} />
-          {showRoadEdges ? 'Hide' : 'Show'} road edges
-        </button>
       </div>
 
-      <div className="relative bg-slate-950">
-        <canvas ref={attachCanvasRef} className="w-full h-full" />
-        {showHud && (
-          <div className="absolute top-4 right-4 bg-slate-900/80 backdrop-blur rounded border border-slate-800 px-4 py-3 text-sm space-y-1">
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">t</span>
-              <span className="font-mono">{hud.time.toFixed(1)} s</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">n</span>
-              <span className="font-mono">{hud.vehicles}</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">v_avg</span>
-              <span className="font-mono">{(hud.avgSpeed * 3.6).toFixed(1)} km/h</span>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-slate-400">fps</span>
-              <span className="font-mono">{hud.fps.toFixed(0)}</span>
+      <div className="absolute top-6 right-6 flex flex-col items-end gap-3 z-30">
+        <button
+          onClick={handleModeCycle}
+          className="w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-orange-600 shadow-[0_10px_30px_rgba(255,121,48,0.35)] flex items-center justify-center border border-orange-400/40 hover:scale-[1.04] active:scale-[0.98] transition"
+          aria-label="Cycle stat modes"
+        >
+          <Sparkles className="text-black drop-shadow" size={22} />
+        </button>
+
+        <div className="relative">
+          <button
+            onClick={() => setToolsOpen(open => !open)}
+            className="w-14 h-14 rounded-full bg-black/80 border border-orange-500/40 shadow-[0_10px_30px_rgba(0,0,0,0.45)] flex items-center justify-center hover:border-orange-400 hover:text-orange-200 transition"
+            aria-label="Toggle tools drawer"
+          >
+            <Zap size={20} className="text-orange-300" />
+          </button>
+          <div
+            className={`absolute right-0 mt-3 origin-top-right transition-all duration-300 ${
+              toolsOpen
+                ? 'opacity-100 scale-100 translate-y-0'
+                : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'
+            }`}
+          >
+            <div className="rounded-3xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] overflow-hidden">
+              {[
+                {
+                  key: 'spawn',
+                  label: 'Spawn Point',
+                  icon: MapPin,
+                  action: () => {
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(true);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(false);
+                  },
+                },
+                {
+                  key: 'place',
+                  label: 'Place Obstacle',
+                  icon: Shield,
+                  action: () => {
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(false);
+                    setObstacleRemovalMode(false);
+                    setObstaclePlacementMode(true);
+                  },
+                },
+                {
+                  key: 'remove',
+                  label: 'Remove Obstacle',
+                  icon: Eraser,
+                  action: () => {
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(false);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(true);
+                  },
+                },
+                {
+                  key: 'roads',
+                  label: 'Add New Roads',
+                  icon: GitBranchPlus,
+                  action: () => setShowBackdrop(true),
+                },
+              ].map((tool, idx) => {
+                const Icon = tool.icon;
+                return (
+                  <button
+                    key={tool.key}
+                    onClick={() => {
+                      tool.action();
+                      setToolsOpen(false);
+                    }}
+                    className={`flex items-center gap-3 px-4 py-3 w-full text-left text-sm hover:bg-orange-500/10 transition ${
+                      idx !== 0 ? 'border-t border-orange-500/15' : ''
+                    }`}
+                  >
+                    <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
+                      <Icon size={16} className="text-orange-200" />
+                    </div>
+                    <span className="text-white">{tool.label}</span>
+                  </button>
+                );
+              })}
             </div>
           </div>
-        )}
-        {selection && (selectedNode || selectedEdge) && (
-          <div className="absolute bottom-4 right-4 w-80 max-h-[70vh] overflow-hidden rounded border border-slate-800 bg-slate-900/90 backdrop-blur p-4 shadow-lg text-sm text-slate-100 space-y-3">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-slate-400">
-                  Selected type: {selection.type === 'node' ? 'Node' : 'Edge'}
+        </div>
+      </div>
+
+      <div className="absolute left-6 right-6 sm:right-auto sm:w-[460px] max-w-[560px] bottom-6 z-30">
+        <div
+          className={`relative overflow-hidden rounded-[24px] border border-orange-500/25 bg-black/80 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.55)] transition-all duration-500 ${
+            panelOpen ? 'max-h-[82vh]' : 'max-h-[240px]'
+          }`}
+        >
+          <div className="absolute inset-0 bg-gradient-to-br from-orange-500/12 via-black/40 to-black/80 pointer-events-none" />
+          <div className="relative p-4 pt-6 min-h-[200px]">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl border border-orange-500/40 bg-gradient-to-br from-orange-500/30 to-orange-500/10 flex items-center justify-center shadow-[0_10px_40px_rgba(255,121,48,0.25)]">
+                  <span className="text-lg font-semibold text-white tracking-wide">TF</span>
                 </div>
-                <div className="font-mono text-slate-100 text-xs break-all">
-                  {selection.id}
+                <div>
+                  <div className="text-[11px] uppercase tracking-[0.24em] text-orange-200/70">
+                    Simulation Suite
+                  </div>
+                  {panelOpen ? (
+                    <div className="text-2xl font-semibold leading-tight">
+                      <span className="text-white">Tra</span>
+                      <span className="text-orange-400">Fixed</span>
+                    </div>
+                  ) : (
+                    <div className="text-xl font-semibold text-white leading-tight">
+                      Traffic Simulation
+                    </div>
+                  )}
                 </div>
               </div>
               <button
-                className="text-xs text-slate-300 hover:text-white"
-                onClick={() => applySelection(undefined)}
+                onClick={() => setPanelOpen(open => !open)}
+                className="w-11 h-11 rounded-2xl border border-orange-500/30 bg-orange-500/15 text-orange-200 flex items-center justify-center hover:bg-orange-500/25 transition"
+                aria-label="Toggle controls"
               >
-                Clear
+                <ChevronUp
+                  className={`transition-transform duration-300 ${panelOpen ? 'rotate-180' : ''}`}
+                />
               </button>
             </div>
 
-            {selection.type === 'edge' && selectedStats && (
-              <div className="space-y-1 text-xs text-slate-300">
-                <div className="flex justify-between">
-                  <span>Length</span>
-                  <span className="font-mono text-white">{selectedStats.length.toFixed(1)} m</span>
+            <div
+              className={`absolute left-4 right-4 transition-all duration-500 ${
+                panelOpen ? 'top-[80px]' : 'bottom-4'
+              }`}
+            >
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-3 gap-2">
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      Cars
+                    </div>
+                    <div className="text-lg font-semibold">{hud.vehicles}</div>
+                  </div>
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      FPS
+                    </div>
+                    <div className="text-lg font-semibold">{hud.fps.toFixed(0)}</div>
+                  </div>
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
+                    <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                      Speed
+                    </div>
+                    <div className="text-lg font-semibold">
+                      {(hud.avgSpeed * 3.6).toFixed(1)} km/h
+                    </div>
+                  </div>
                 </div>
-                {selectedStats.speedLimit && (
-                  <div className="flex justify-between">
-                    <span>Speed limit</span>
-                    <span className="font-mono text-white">
-                      {(selectedStats.speedLimit * 3.6).toFixed(0)} km/h
-                    </span>
+
+                <div className="flex items-center gap-2 rounded-2xl bg-[#0b0b0f] border border-orange-500/30 px-3 py-2 shadow-inner">
+                  <Search size={16} className="text-orange-300" />
+                  <input
+                    value={streetQuery}
+                    onChange={e => setStreetQuery(e.target.value)}
+                    list="street-suggestions"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        searchStreetInView();
+                      }
+                    }}
+                    placeholder="Search visible streets"
+                    className="flex-1 bg-transparent outline-none text-sm placeholder:text-orange-100/50"
+                  />
+                  <button
+                    onClick={() => setIsRunning(prev => !prev)}
+                    className="flex items-center gap-1 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-medium shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                  >
+                    {isRunning ? <Pause size={14} /> : <Play size={14} />}
+                    <span>{isRunning ? 'Pause' : 'Play'}</span>
+                  </button>
+                </div>
+                <datalist id="street-suggestions">
+                  {streetSuggestions.map(name => (
+                    <option key={name} value={name} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+
+            <div
+              className={`transition-all duration-500 ${
+                panelOpen
+                  ? 'opacity-100 translate-y-0 pt-36 space-y-4'
+                  : 'opacity-0 -translate-y-2 pointer-events-none h-0 overflow-hidden'
+              }`}
+            >
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
+                  <select
+                    value={scenario}
+                    onChange={e => setScenario(e.target.value as ScenarioKey)}
+                    className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                  >
+                    <option value="simple_highway">Highway with ramps</option>
+                    <option value="urban_intersection">Signalized intersection</option>
+                    <option value="roundabout">Four-arm roundabout</option>
+                    <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+                    <option value="test_perchance">Test Perchance (full)</option>
+                  </select>
+                  <p className="text-[11px] text-orange-100/70">
+                    Swiping up reveals advanced tuning without leaving the viewport.
+                  </p>
+                </div>
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                    <span>Time scale</span>
+                    <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
                   </div>
-                )}
-                {selectedStats.travelMinutes && (
-                  <div className="flex justify-between">
-                    <span>Est. travel time</span>
-                    <span className="font-mono text-white">
-                      {selectedStats.travelMinutes.toFixed(1)} min
-                    </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
+                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
+                    >
+                      <Minus size={14} />
+                    </button>
+                    <input
+                      type="range"
+                      min={0.25}
+                      max={4}
+                      step={0.05}
+                      value={timeScale}
+                      onChange={e => setTimeScale(parseFloat(e.target.value))}
+                      className="flex-1 accent-orange-500"
+                    />
+                    <button
+                      onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
+                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
+                    >
+                      <Plus size={14} />
+                    </button>
                   </div>
-                )}
-                {selectedStats.lanes && (
-                  <div className="flex justify-between">
-                    <span>Lanes</span>
-                    <span className="font-mono text-white">{selectedStats.lanes}</span>
+                  <div className="flex items-center justify-between text-xs text-orange-100/80">
+                    <span>Input</span>
+                    <button
+                      onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
+                      className="px-3 py-2 rounded-xl bg-orange-500/15 border border-orange-500/30 text-sm hover:border-orange-400 transition"
+                    >
+                      {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
+                    </button>
                   </div>
-                )}
-                <div className="flex justify-between items-center">
-                  <span>Direction</span>
+                </div>
+              </div>
+
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={handleReset}
+                      className="flex-1 min-w-[140px] rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={handleAddVehicle}
+                      className="flex-1 min-w-[140px] rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                    >
+                      + Inject 1
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      min={1}
+                      max={200}
+                      value={bulkCount}
+                      onChange={e =>
+                        setBulkCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))
+                      }
+                      className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                    />
+                    <button
+                      onClick={() => handleAddVehiclesBulk(bulkCount)}
+                      className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                    >
+                      Inject {bulkCount}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="grid grid-cols-2 gap-2 text-sm">
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(true);
+                        setObstaclePlacementMode(false);
+                        setObstacleRemovalMode(false);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        spawnPointPlacementMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Spawn point
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(false);
+                        setObstacleRemovalMode(false);
+                        setObstaclePlacementMode(true);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        obstaclePlacementMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Place obstacle
+                    </button>
+                    <button
+                      onClick={() => {
+                        setSpawnPointPlacementMode(false);
+                        setObstaclePlacementMode(false);
+                        setObstacleRemovalMode(true);
+                      }}
+                      className={`rounded-xl px-3 py-2 border transition ${
+                        obstacleRemovalMode
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      Remove obstacle
+                    </button>
+                    <button
+                      onClick={() => setShowRoadEdges(v => !v)}
+                      className="rounded-xl px-3 py-2 border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                    >
+                      {showRoadEdges ? 'Hide edges' : 'Show edges'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => setShowHud(v => !v)}
+                  className={`rounded-full px-4 py-2 text-sm border transition ${
+                    showHud
+                      ? 'border-orange-400 bg-orange-500/20'
+                      : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                  }`}
+                >
+                  {showHud ? 'Hide HUD' : 'Show HUD'}
+                </button>
+                <button
+                  onClick={() => setShowBackdrop(v => !v)}
+                  className={`rounded-full px-4 py-2 text-sm border transition ${
+                    showBackdrop
+                      ? 'border-orange-400 bg-orange-500/20'
+                      : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                  }`}
+                >
+                  {showBackdrop ? 'Hide map detail' : 'Show map detail'}
+                </button>
+                <button
+                  onClick={() => applyZoom(1)}
+                  className="rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                >
+                  Reset zoom
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative px-4 pb-3">
+            <button
+              className="w-full flex items-center justify-center gap-3 text-xs uppercase tracking-[0.25em] text-orange-200/80 py-2"
+              onPointerDown={e => handlePanelPress(e.clientY)}
+              onPointerUp={e => handlePanelRelease(e.clientY)}
+              onPointerCancel={() => (swipeStartRef.current = null)}
+              onTouchStart={e => handlePanelPress(e.touches[0].clientY)}
+              onTouchEnd={e => handlePanelRelease(e.changedTouches[0].clientY)}
+              aria-label="Swipe handle"
+            >
+              <span className="h-1.5 w-16 rounded-full bg-orange-400/60" />
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {showHud && (
+        <div className="absolute top-5 right-24 bg-black/70 backdrop-blur-xl border border-orange-500/25 rounded-3xl px-4 py-3 text-sm space-y-1 shadow-[0_15px_40px_rgba(0,0,0,0.45)]">
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">t</span>
+            <span className="font-mono">{hud.time.toFixed(1)} s</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">n</span>
+            <span className="font-mono">{hud.vehicles}</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">v_avg</span>
+            <span className="font-mono">{(hud.avgSpeed * 3.6).toFixed(1)} km/h</span>
+          </div>
+          <div className="flex justify-between gap-6">
+            <span className="text-orange-100/70">fps</span>
+            <span className="font-mono">{hud.fps.toFixed(0)}</span>
+          </div>
+        </div>
+      )}
+
+      {selection && (selectedNode || selectedEdge) && (
+        <div className="absolute bottom-4 right-4 w-80 max-h-[70vh] overflow-hidden rounded-3xl border border-orange-500/25 bg-black/85 backdrop-blur-xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.55)] text-sm text-orange-50 space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wide text-orange-200/80">
+                Selected type: {selection.type === 'node' ? 'Node' : 'Edge'}
+              </div>
+              <div className="font-mono text-orange-50 text-xs break-all">{selection.id}</div>
+            </div>
+            <button
+              className="text-xs text-orange-100 hover:text-white"
+              onClick={() => applySelection(undefined)}
+            >
+              Clear
+            </button>
+          </div>
+
+          {selection.type === 'edge' && selectedStats && (
+            <div className="space-y-1 text-xs text-orange-100/90">
+              <div className="flex justify-between">
+                <span>Length</span>
+                <span className="font-mono text-white">{selectedStats.length.toFixed(1)} m</span>
+              </div>
+              {selectedStats.speedLimit && (
+                <div className="flex justify-between">
+                  <span>Speed limit</span>
                   <span className="font-mono text-white">
-                    {selection.direction === 'forward' ? '→ forward' : '← backward'}
+                    {(selectedStats.speedLimit * 3.6).toFixed(0)} km/h
                   </span>
                 </div>
+              )}
+              {selectedStats.travelMinutes && (
+                <div className="flex justify-between">
+                  <span>Est. travel time</span>
+                  <span className="font-mono text-white">
+                    {selectedStats.travelMinutes.toFixed(1)} min
+                  </span>
+                </div>
+              )}
+              {selectedStats.lanes && (
+                <div className="flex justify-between">
+                  <span>Lanes</span>
+                  <span className="font-mono text-white">{selectedStats.lanes}</span>
+                </div>
+              )}
+              <div className="flex justify-between items-center">
+                <span>Direction</span>
+                <span className="font-mono text-white">
+                  {selection.direction === 'forward' ? '→ forward' : '← backward'}
+                </span>
               </div>
-            )}
-
-            <div className="flex gap-2">
-              <button
-                onClick={() =>
-                  selection &&
-                  copyJSON(selection.type === 'node' ? selectedNode : selectedEdge)
-                }
-                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
-              >
-                Copy JSON
-              </button>
-              <button
-                onClick={() => {
-                  if (!selection) return;
-                  const data = selection.type === 'node' ? selectedNode : selectedEdge;
-                  if (!data) return;
-                  const filename = `${selection.type}_${selection.id}.json`;
-                  downloadJSON(filename, data);
-                }}
-                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
-              >
-                Download JSON
-              </button>
             </div>
+          )}
 
-            <div className="rounded bg-slate-950 border border-slate-800 p-2 text-xs text-slate-200 max-h-48 overflow-auto">
-              <pre className="whitespace-pre-wrap font-mono text-[11px] leading-snug">
-                {selectedJSON}
-              </pre>
-            </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() =>
+                selection && copyJSON(selection.type === 'node' ? selectedNode : selectedEdge)
+              }
+              className="flex-1 rounded-xl bg-white/5 hover:bg-orange-500/10 px-2 py-2 text-xs text-orange-50 border border-orange-500/25 transition"
+            >
+              Copy JSON
+            </button>
+            <button
+              onClick={() => {
+                if (!selection) return;
+                const data = selection.type === 'node' ? selectedNode : selectedEdge;
+                if (!data) return;
+                const filename = `${selection.type}_${selection.id}.json`;
+                downloadJSON(filename, data);
+              }}
+              className="flex-1 rounded-xl bg-white/5 hover:bg-orange-500/10 px-2 py-2 text-xs text-orange-50 border border-orange-500/25 transition"
+            >
+              Download JSON
+            </button>
           </div>
-        )}
-      </div>
+
+          <div className="rounded-2xl bg-black/70 border border-orange-500/20 p-2 text-xs text-orange-100 max-h-48 overflow-auto">
+            <pre className="whitespace-pre-wrap font-mono text-[11px] leading-snug">
+              {selectedJSON}
+            </pre>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
