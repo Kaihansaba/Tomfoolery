@@ -148,9 +148,9 @@ const MAX_ZOOM = 4;
 let obstacleCounter = 50000;
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
 const MAX_ZOOM_SLIDER = MAX_ZOOM;
-const LOD_HIDE_ROADS = 0.7;
-const LOD_FADE_START = 0.9;
-const LOD_FULL = 1.3;
+const LOD_HIDE_ROADS = 1.5;
+const LOD_FADE_START = 1.7;
+const LOD_FULL = 2.0;
 const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const MIN_CHUNK_FETCH_INTERVAL_SEC = 3; // throttle Overpass requests
@@ -1921,6 +1921,8 @@ export default function TrafficSimulationApp() {
       const canvas = canvasRef.current;
       const runtime = runtimeRef.current;
       if (!canvas || !runtime?.network.geoReference) return;
+      // When zoomed out, skip dynamic fetching to avoid OOM
+      if (view.scale < LOD_FULL) return;
 
       // 1) Viewport bounds in world space (real-world coordinates)
       const viewBounds = getViewBounds(view, canvas, 40);
