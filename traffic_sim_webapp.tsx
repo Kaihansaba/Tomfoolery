@@ -44,6 +44,20 @@ type Selection =
   | { type: 'node'; id: string }
   | { type: 'edge'; id: string; direction: 'forward' | 'backward' };
 
+function polylineBounds(points: Vector2D[]): Bounds {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 interface HudState {
   time: number;
   vehicles: number;
@@ -486,8 +500,8 @@ function drawVehicle(
 
   ctx.save();
   
-  // Apply fade-out for dead-end vehicles
-  if (vehicle.isAtDeadEnd && vehicle.fadeOutProgress !== undefined) {
+  // Apply fade-out for vehicles marked for removal (dead end or idle)
+  if (vehicle.fadeOutProgress !== undefined) {
     ctx.globalAlpha = 1 - vehicle.fadeOutProgress;
   }
   
@@ -873,6 +887,23 @@ function drawScene(
         ctx.fill();
         ctx.stroke();
         ctx.restore();
+
+        // Highlight connected edges
+        for (const edge of network.edges.values()) {
+          if (edge.fromNode !== node.id && edge.toNode !== node.id) continue;
+          const polyline = getEdgePolyline(network, edge.id);
+          if (!polyline || polyline.length < 2) continue;
+          const pts = polyline.map(pt => worldToScreen(view, pt));
+          ctx.save();
+          ctx.strokeStyle = '#22d3ee';
+          ctx.lineWidth = 5;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
   }
@@ -1120,7 +1151,10 @@ export default function TrafficSimulationApp() {
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
+  const [streetQuery, setStreetQuery] = useState('');
+  const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
   const selectionRef = useRef<Selection | undefined>(undefined);
+  const lastSuggestionUpdateRef = useRef(0);
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -1141,6 +1175,34 @@ export default function TrafficSimulationApp() {
       );
     }
   }, [spawnPointPlacementMode, showRoadEdges]);
+
+  const updateStreetSuggestions = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return;
+    const now = performance.now();
+    if (now - lastSuggestionUpdateRef.current < 150) return;
+    lastSuggestionUpdateRef.current = now;
+
+    const bounds = getViewBounds(view, canvas, 0);
+    const names = new Set<string>();
+    for (const edge of runtime.network.edges.values()) {
+      const name =
+        edge.name ||
+        (edge.metadata as any)?.name ||
+        (edge.metadata as any)?.ref ||
+        (edge as any)?.properties?.name;
+      if (!name) continue;
+      const polyline = getEdgePolyline(runtime.network, edge.id);
+      if (!polyline) continue;
+      if (!boundsIntersect(polylineBounds(polyline), bounds)) continue;
+      names.add(String(name));
+    }
+    setStreetSuggestions(Array.from(names).sort());
+  }, []);
+
+
   useEffect(() => {
     if (backdropContextRef.current) {
       backdropContextRef.current.enabled = showBackdrop;
@@ -1255,10 +1317,11 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges
         );
+        updateStreetSuggestions();
         updateDynamicChunks(view);
       }
     });
-  }, [spawnPointPlacementMode, showRoadEdges, updateDynamicChunks]);
+  }, [spawnPointPlacementMode, showRoadEdges, updateStreetSuggestions, updateDynamicChunks]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
   requestRedrawRef.current = requestRedraw;
@@ -1297,10 +1360,11 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges
         );
+        updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
       }
     },
-    [updateDynamicChunks]
+    [updateStreetSuggestions, updateDynamicChunks]
   );
 
   const initialize = (options?: { seedVehicles?: boolean }) => {
@@ -1336,10 +1400,6 @@ export default function TrafficSimulationApp() {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
     engine.setLaneChangeModel(new MOBILModel());
-    if (shouldSeedVehicles) {
-      seedVehicles(engine, scenario);
-    }
-
     runtimeRef.current = { engine, network };
     backdropContextRef.current = {
       network,
@@ -1353,8 +1413,18 @@ export default function TrafficSimulationApp() {
     hudAccumulatorRef.current = 0;
     frameCountRef.current = 0;
     lastInitSeedRef.current = shouldSeedVehicles;
-
-    drawScene(canvas, engine, viewRef.current, backdropContextRef.current || undefined, spawnPointsRef.current, network, selectionRef.current, spawnPointPlacementMode, showRoadEdges);
+    drawScene(
+      canvas,
+      engine,
+      viewRef.current,
+      backdropContextRef.current || undefined,
+      spawnPointsRef.current,
+      network,
+      selectionRef.current,
+      spawnPointPlacementMode,
+      showRoadEdges
+    );
+    updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
     setHud({
       time: 0,
@@ -1362,6 +1432,26 @@ export default function TrafficSimulationApp() {
       avgSpeed: 0,
       fps: 0,
     });
+
+    if (shouldSeedVehicles) {
+      setTimeout(() => {
+        seedVehicles(engine, scenario);
+        drawScene(
+          canvas,
+          engine,
+          viewRef.current as ViewTransform,
+          backdropContextRef.current || undefined,
+          spawnPointsRef.current,
+          network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges
+        );
+        updateStreetSuggestions();
+        updateDynamicChunks(viewRef.current as ViewTransform);
+        setHud(h => ({ ...h, vehicles: engine.vehicles.size }));
+      }, 0);
+    }
   };
 
   const attachCanvasRef = useCallback((node: HTMLCanvasElement | null) => {
@@ -1370,6 +1460,67 @@ export default function TrafficSimulationApp() {
       setCanvasReady(true);
     }
   }, []);
+
+  const fitViewToBounds = useCallback(
+    (bounds: Bounds) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const padding = 60;
+      const width = Math.max(1, bounds.maxX - bounds.minX);
+      const height = Math.max(1, bounds.maxY - bounds.minY);
+      const scale = clamp(
+        Math.min(
+          canvas.width / (width * 1.1 + padding),
+          canvas.height / (height * 1.1 + padding)
+        ),
+        MIN_ZOOM_SLIDER,
+        MAX_ZOOM_SLIDER
+      );
+      const center = {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2,
+      };
+      viewRef.current = {
+        scale,
+        offsetX: canvas.width / 2 - center.x * scale,
+        offsetY: canvas.height / 2 - center.y * scale,
+      };
+      setZoomLevel(scale);
+    },
+    []
+  );
+
+  const searchStreetInView = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return;
+    const query = streetQuery.trim().toLowerCase();
+    if (!query) return;
+
+    const visible = getViewBounds(view, canvas, 0);
+    let match: { edgeId: string; dir: 'forward' | 'backward'; bounds: Bounds } | undefined;
+
+    for (const edge of runtime.network.edges.values()) {
+      const name =
+        edge.name ||
+        (edge.metadata as any)?.name ||
+        (edge.metadata as any)?.ref ||
+        (edge as any)?.properties?.name;
+      if (!name || !String(name).toLowerCase().includes(query)) continue;
+      const polyline = getEdgePolyline(runtime.network, edge.id);
+      if (!polyline) continue;
+      const pb = polylineBounds(polyline);
+      if (!boundsIntersect(pb, visible)) continue;
+      match = { edgeId: edge.id, dir: computeEdgeDirection(edge), bounds: pb };
+      break;
+    }
+
+    if (match) {
+      fitViewToBounds(match.bounds);
+      applySelection({ type: 'edge', id: match.edgeId, direction: match.dir });
+    }
+  }, [streetQuery, applySelection, fitViewToBounds]);
 
   useEffect(() => {
     if (!canvasReady) return;
@@ -1566,6 +1717,7 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges
       );
+      updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
       setZoomLevel(viewRef.current.scale);
     };
@@ -1619,6 +1771,7 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges
       );
+      updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
     };
 
@@ -1855,6 +2008,39 @@ export default function TrafficSimulationApp() {
             <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
             <option value="test_perchance">Test Perchance (full)</option>
           </select>
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm uppercase tracking-wide text-slate-400">Find street</div>
+          <div className="flex gap-2">
+            <input
+              value={streetQuery}
+              onChange={e => setStreetQuery(e.target.value)}
+              list="street-suggestions"
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  searchStreetInView();
+                }
+              }}
+              placeholder="Street name"
+              className="flex-1 rounded bg-slate-800 border border-slate-700 px-3 py-2 text-sm"
+            />
+            <button
+              onClick={searchStreetInView}
+              className="rounded bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+            >
+              Go
+            </button>
+            <datalist id="street-suggestions">
+              {streetSuggestions.map(name => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </div>
+          <p className="text-xs text-slate-400">
+            Searches visible area, zooms to the first match and selects it.
+          </p>
         </div>
 
         <div className="space-y-3">

@@ -362,6 +362,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   private updatePositions(dt: number): void {
+    const toRemove: VehicleID[] = [];
     for (const vehicle of this.vehicles.values()) {
       // Update velocity
       const newVelocity = Math.max(0, vehicle.velocity + vehicle.acceleration * dt);
@@ -388,6 +389,31 @@ export class TrafficSimulationEngine implements SimulationEngine {
       
       // Update global position from lane coordinates
       this.updateGlobalPosition(vehicle, lane);
+
+      // Track idle time and fade out stuck vehicles
+      if (!vehicle.isAtDeadEnd) {
+        const idleSpeed = 0.3;
+        const idleAccel = 0.3;
+        const timeout = 8; // seconds before fading a stuck vehicle
+        if (vehicle.velocity < idleSpeed && Math.abs(vehicle.acceleration) < idleAccel) {
+          vehicle.idleTime = (vehicle.idleTime ?? 0) + dt;
+          if (vehicle.idleTime > timeout) {
+            vehicle.fadeOutProgress = (vehicle.fadeOutProgress ?? 0) + dt / 2; // 2s fade
+            if (vehicle.fadeOutProgress >= 1) {
+              toRemove.push(vehicle.id);
+            }
+          }
+        } else {
+          vehicle.idleTime = 0;
+          if (!vehicle.isAtDeadEnd) {
+            vehicle.fadeOutProgress = undefined;
+          }
+        }
+      }
+    }
+
+    for (const id of toRemove) {
+      this.removeVehicle(id);
     }
   }
   
@@ -422,30 +448,54 @@ export class TrafficSimulationEngine implements SimulationEngine {
 
     while (position > lane.length && lane.successors.length > 0) {
       position -= lane.length;
-      
-      // Prefer successors that don't lead to dead ends
-      let nextLaneId: LaneID | undefined;
-      const nonDeadEndSuccessors = lane.successors.filter(succId => {
-        const succLane = this.network.getLane(succId);
-        return succLane && !this.leadsToDeadEnd(succId);
-      });
-      
-      if (nonDeadEndSuccessors.length > 0) {
-        // Prefer non-dead-end routes, but fall back to any successor if needed
-        nextLaneId = nonDeadEndSuccessors[0];
-      } else {
-        // All paths lead to dead ends, use first successor anyway
-        nextLaneId = lane.successors[0];
+      let candidateLanes = lane.successors
+        .map(id => this.network.getLane(id))
+        .filter((l): l is Lane => {
+          if (!l) return false;
+          return l.laneType === 'driving';
+        });
+
+      if (candidateLanes.length === 0) {
+        const edge = this.network.getEdge(lane.edgeId);
+        const node = edge ? this.network.getNode(edge.toNode) : undefined;
+        if (node) {
+          for (const outEdgeId of node.outgoingEdges) {
+            const outEdge = this.network.getEdge(outEdgeId);
+            if (!outEdge) continue;
+            const idx = Math.min(lane.index, outEdge.lanes.length - 1);
+            const cand = outEdge.lanes[idx];
+            if (cand && cand.laneType === 'driving') candidateLanes.push(cand);
+          }
+        }
       }
-      
-      if (!nextLaneId) break;
-      
-      const nextLane = this.network.getLane(nextLaneId);
-      if (!nextLane) {
-        console.warn(`⚠️ Vehicle ${vehicle.id}: Successor lane ${nextLaneId} not found, breaking transition`);
+
+      if (candidateLanes.length === 0) {
         break;
       }
-      transitionPath.push(nextLaneId);
+
+      // Weighted random selection to avoid bias toward the first successor
+      const weights = candidateLanes.map(next => {
+        const nextEdge = this.network.getEdge(next.edgeId);
+        const currentEdge = this.network.getEdge(lane.edgeId);
+        const indexAffinity = 1 / (1 + Math.abs(next.index - lane.index));
+        const sameRoadBonus =
+          nextEdge && currentEdge && nextEdge.roadType === currentEdge.roadType ? 0.5 : 0;
+        const deadEndPenalty = this.leadsToDeadEnd(next.id) ? -0.5 : 0.5;
+        return Math.max(0.05, 1 + indexAffinity + sameRoadBonus + deadEndPenalty);
+      });
+
+      const total = weights.reduce((s, w) => s + w, 0);
+      let pick = Math.random() * total;
+      let nextLane = candidateLanes[candidateLanes.length - 1];
+      for (let i = 0; i < candidateLanes.length; i++) {
+        pick -= weights[i];
+        if (pick <= 0) {
+          nextLane = candidateLanes[i];
+          break;
+        }
+      }
+
+      transitionPath.push(nextLane.id);
       lane = nextLane;
     }
 
