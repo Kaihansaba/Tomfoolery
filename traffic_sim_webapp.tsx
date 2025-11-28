@@ -1362,7 +1362,7 @@ export default function TrafficSimulationApp() {
   const [showBackdrop, setShowBackdrop] = useState(true);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
-  const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('mouse');
+  const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('trackpad');
   const requestRedrawRef = useRef<{ fn: () => void }>({ fn: () => {} });
   const redrawRafIdRef = useRef<number | undefined>(undefined);
 
