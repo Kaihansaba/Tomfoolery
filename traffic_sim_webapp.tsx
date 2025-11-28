@@ -33,6 +33,8 @@ import {
 import exampleNetworks from './example_networks.json';
 import heilbronnPerchance from './heilbronnperchance.json';
 import testperchance from './testperchance.json';
+import { fastIndexLoad } from './src/utils/mapLoader';
+import { config as appConfig } from './src/config';
 
 const networks = {
   ...exampleNetworks,
@@ -1523,6 +1525,7 @@ export default function TrafficSimulationApp() {
   const isRunningRef = useRef(true);
   const lastSuggestionUpdateRef = useRef(0);
   const swipeStartRef = useRef<number | null>(null);
+  const pendingIndexRef = useRef<Promise<any> | null>(null);
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -1753,8 +1756,21 @@ export default function TrafficSimulationApp() {
     baseNetworkJSONRef.current = null;
 
     const networkJSON = networks[scenario];
+
+    if (appConfig.optimizations.chunkedIndex) {
+      const urlMap: Partial<Record<ScenarioKey, string>> = {
+        heilbronn_perchance: '/heilbronnperchance.json',
+        test_perchance: '/testperchance.json',
+      };
+      const url = urlMap[scenario];
+      if (url && !pendingIndexRef.current) {
+        pendingIndexRef.current = fastIndexLoad(url).catch(err =>
+          console.warn('Chunked index load failed', err)
+        );
+      }
+    }
     const network = RoadNetworkImpl.fromJSON(networkJSON);
-    const config: SimulationConfig = {
+    const simConfig: SimulationConfig = {
       timeStep: 1 / 60,
       targetFPS: 60,
       maxVehicles: 600,
@@ -1762,7 +1778,7 @@ export default function TrafficSimulationApp() {
       spatialIndexType: 'quadtree',
     };
 
-    const engine = new TrafficSimulationEngine(network, config);
+    const engine = new TrafficSimulationEngine(network, simConfig);
     Object.entries(DEFAULT_VEHICLE_TYPES).forEach(([key, typeConfig]) => {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
