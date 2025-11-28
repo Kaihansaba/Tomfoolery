@@ -117,6 +117,12 @@ const LOD_FULL = 1.3;
 const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const VEHICLE_TARGETS = {
+  off: 0,
+  low: 120,
+  mid: 500,
+  high: 1000,
+} as const;
 
 type OSMNode = {
   type: 'node';
@@ -1468,7 +1474,7 @@ export default function TrafficSimulationApp() {
     network: RoadNetworkImpl;
   } | null>(null);
   const hasInitializedRef = useRef(false);
-  const lastInitSeedRef = useRef(true); // remember whether last init seeded vehicles
+  const lastInitSeedRef = useRef(false); // keep map empty by default
   const viewRef = useRef<ViewTransform | null>(null);
   const rafRef = useRef<number>();
   const lastFrameRef = useRef<number>(0);
@@ -1514,10 +1520,13 @@ export default function TrafficSimulationApp() {
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
   const [obstacleRemovalMode, setObstacleRemovalMode] = useState(false);
+  const [speedSignPlacementMode, setSpeedSignPlacementMode] = useState<SpeedLimitValue | null>(null);
   const [trafficLightPlacementMode, setTrafficLightPlacementMode] = useState(false);
   const [trafficLightTimer, setTrafficLightTimer] = useState(0);
   const [trafficLights, setTrafficLights] = useState<TrafficLight[]>([]);
   const trafficLightsRef = useRef<TrafficLight[]>([]);
+  const vehicleTargetRef = useRef<number>(VEHICLE_TARGETS.off);
+  const [vehicleTarget, setVehicleTarget] = useState<number>(VEHICLE_TARGETS.off);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
@@ -1694,6 +1703,10 @@ export default function TrafficSimulationApp() {
     requestRedraw();
   }, [showBackdrop, requestRedraw]);
 
+  useEffect(() => {
+    vehicleTargetRef.current = vehicleTarget;
+  }, [vehicleTarget]);
+
   const applyZoom = useCallback(
     (newScale: number, anchor?: { x: number; y: number }) => {
       const canvas = canvasRef.current;
@@ -1744,6 +1757,7 @@ export default function TrafficSimulationApp() {
     spawnPointsRef.current = [];
     setTrafficLights([]);
     trafficLightsRef.current = [];
+    vehicleTargetRef.current = vehicleTarget;
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
@@ -1910,7 +1924,7 @@ export default function TrafficSimulationApp() {
 
   useEffect(() => {
     if (!canvasReady) return;
-    const shouldSeed = hasInitializedRef.current ? false : true;
+    const shouldSeed = false;
     initialize({ seedVehicles: shouldSeed });
     hasInitializedRef.current = true;
     if (viewRef.current) setZoomLevel(viewRef.current.scale);
@@ -2049,6 +2063,16 @@ export default function TrafficSimulationApp() {
 
         hudAccumulatorRef.current = 0;
         frameCountRef.current = 0;
+      }
+
+      // Passive population controller: top up to target if below
+      const target = vehicleTargetRef.current;
+      const deficit = Math.max(0, target - runtime.engine.vehicles.size);
+      if (deficit > 0) {
+        const attempts = Math.min(deficit, 8);
+        for (let i = 0; i < attempts; i++) {
+          spawnVehicle();
+        }
       }
 
       if (!isRunningRef.current) return;
@@ -2960,14 +2984,34 @@ export default function TrafficSimulationApp() {
                     >
                       Remove obstacle
                     </button>
+                <button
+                  onClick={() => setShowRoadEdges(v => !v)}
+                  className="rounded-xl px-3 py-2 border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                >
+                  {showRoadEdges ? 'Hide edges' : 'Show edges'}
+                </button>
+                <div className="grid grid-cols-4 gap-2 text-sm">
+                  {([
+                    { key: 'off', label: 'Off', value: VEHICLE_TARGETS.off },
+                    { key: 'low', label: 'Low', value: VEHICLE_TARGETS.low },
+                    { key: 'mid', label: 'Mid', value: VEHICLE_TARGETS.mid },
+                    { key: 'high', label: 'High', value: VEHICLE_TARGETS.high },
+                  ] as const).map(option => (
                     <button
-                      onClick={() => setShowRoadEdges(v => !v)}
-                      className="rounded-xl px-3 py-2 border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                      key={option.key}
+                      onClick={() => setVehicleTarget(option.value)}
+                      className={`rounded-xl px-2 py-2 border transition ${
+                        vehicleTarget === option.value
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
                     >
-                      {showRoadEdges ? 'Hide edges' : 'Show edges'}
+                      {option.label}
                     </button>
-                  </div>
+                  ))}
                 </div>
+              </div>
+            </div>
               </div>
 
               <div className="flex flex-wrap gap-2">
