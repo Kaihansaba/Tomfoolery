@@ -136,7 +136,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
 
   private enforceMinimumGap(laneVehicles: Map<LaneID, VehicleState[]>): void {
-    const minGap = 2.0;
+    const minGap = 4.0;
     for (const [laneId, vehicles] of laneVehicles.entries()) {
       const lane = this.network.getLane(laneId);
       if (!lane) continue;
@@ -146,6 +146,11 @@ export class TrafficSimulationEngine implements SimulationEngine {
         const follower = vehicles[i];
         const leader = vehicles[i + 1];
         const oldLanePosition = follower.lanePosition;
+
+        if (follower.kind === 'obstacle') {
+          nextAllowed = follower.lanePosition;
+          continue;
+        }
         
         const maxPosition = Math.max(0, nextAllowed - minGap);
         if (follower.lanePosition > maxPosition) {
@@ -194,6 +199,16 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private updateVehicles(dt: number, laneVehicles: Map<LaneID, VehicleState[]>): void {
     for (const vehicle of this.vehicles.values()) {
+      if (vehicle.kind === 'obstacle') {
+        vehicle.velocity = 0;
+        vehicle.acceleration = 0;
+        vehicle.isChangingLane = false;
+        vehicle.targetLaneId = undefined;
+        vehicle.laneChangeProgress = undefined;
+        vehicle.laneOffset = 0;
+        continue;
+      }
+
       const model = this.driverModels.get(vehicle.type);
       if (!model) continue;
 
@@ -241,13 +256,26 @@ export class TrafficSimulationEngine implements SimulationEngine {
     const minCooldown = 1.8; // seconds
     
     for (const vehicle of this.vehicles.values()) {
+      if (vehicle.kind === 'obstacle') {
+        vehicle.isChangingLane = false;
+        vehicle.targetLaneId = undefined;
+        vehicle.laneChangeProgress = undefined;
+        vehicle.laneOffset = 0;
+        continue;
+      }
+
+      const leaderForBypass = this.findLeaderInLane(vehicle.laneId, vehicle.lanePosition, laneVehicles, vehicle.id);
+      const approachingObstacle =
+        leaderForBypass?.kind === 'obstacle' &&
+        leaderForBypass.lanePosition - vehicle.lanePosition < 80;
+
       if (vehicle.isChangingLane) {
         this.updateLaneChangeProgress(vehicle);
         continue;
       }
 
       const lastChange = this.laneChangeCooldown.get(vehicle.id);
-      if (lastChange !== undefined && this.currentTime - lastChange < minCooldown) {
+      if (!approachingObstacle && lastChange !== undefined && this.currentTime - lastChange < minCooldown) {
         continue;
       }
       
@@ -364,6 +392,20 @@ export class TrafficSimulationEngine implements SimulationEngine {
   private updatePositions(dt: number): void {
     const toRemove: VehicleID[] = [];
     for (const vehicle of this.vehicles.values()) {
+      if (vehicle.kind === 'obstacle') {
+        vehicle.velocity = 0;
+        vehicle.acceleration = 0;
+        vehicle.isChangingLane = false;
+        vehicle.targetLaneId = undefined;
+        vehicle.laneChangeProgress = undefined;
+        vehicle.laneOffset = 0;
+        const laneStatic = this.network.getLane(vehicle.laneId);
+        if (laneStatic) {
+          this.updateGlobalPosition(vehicle, laneStatic);
+        }
+        continue;
+      }
+
       // Update velocity
       const newVelocity = Math.max(0, vehicle.velocity + vehicle.acceleration * dt);
       vehicle.velocity = newVelocity;

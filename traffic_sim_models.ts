@@ -157,6 +157,9 @@ export class MOBILModel implements ILaneChangeModel {
   private threshold: number;
   private safeDecel: number;
   private rightBias: number;
+  private obstacleBypassLookahead: number = 60;
+  private obstacleBypassBonus: number = 8;
+  private obstacleClearDistance: number = 30;
   
   constructor(
     politeness: number = 0.3,
@@ -234,7 +237,20 @@ export class MOBILModel implements ILaneChangeModel {
     const newLeader = this.findLeaderInLane(vehicle, targetLane, vehicles);
     const newFollower = this.findFollowerInLane(vehicle, targetLane, vehicles);
 
+    const leaderIsObstacle = oldLeader?.kind === 'obstacle';
+    const distanceToObstacle =
+      leaderIsObstacle && oldLeader ? oldLeader.lanePosition - vehicle.lanePosition : Infinity;
+    const approachingObstacle =
+      leaderIsObstacle && distanceToObstacle < this.obstacleBypassLookahead;
+
+    const targetBlockedByObstacle =
+      newLeader?.kind === 'obstacle' &&
+      newLeader.lanePosition - vehicle.lanePosition < this.obstacleClearDistance;
+
     const isSafe = this.checkSafety(vehicle, targetLane, newLeader, newFollower);
+    if (targetBlockedByObstacle) {
+      return { shouldChange: false, utility: -Infinity, isSafe: false, reason: 'blocked-by-obstacle' };
+    }
     if (!isSafe) {
       return { shouldChange: false, utility: -Infinity, isSafe: false, reason: 'none' };
     }
@@ -256,9 +272,15 @@ export class MOBILModel implements ILaneChangeModel {
       ? this.estimateAcceleration(newFollower, vehicle, targetLane)
       : 0;
 
+    let obstacleBonus = 0;
+    if (approachingObstacle) {
+      obstacleBonus = this.obstacleBypassBonus;
+    }
+
     const incentive =
       (acAfter - acBefore) +
-      this.politeness * ((aoAfter - aoBefore) + (anAfter - anBefore));
+      this.politeness * ((aoAfter - aoBefore) + (anAfter - anBefore)) +
+      obstacleBonus;
 
     const bias = targetLane.index < currentLane.index ? -this.rightBias : this.rightBias;
     
@@ -266,12 +288,12 @@ export class MOBILModel implements ILaneChangeModel {
     const deadEndPenalty = this.leadsToDeadEnd(targetLane.id, network) ? -5.0 : 0;
     
     const utility = incentive + bias + deadEndPenalty;
-    const shouldChange = utility > this.threshold;
+    const shouldChange = approachingObstacle ? isSafe && !targetBlockedByObstacle : utility > this.threshold;
 
     return {
       shouldChange,
       targetLaneId: shouldChange ? targetLane.id : undefined,
-      utility,
+      utility: shouldChange ? Math.max(utility, this.threshold + 1) : utility,
       isSafe,
       reason: shouldChange ? 'discretionary' : 'none',
     };
@@ -287,6 +309,13 @@ export class MOBILModel implements ILaneChangeModel {
     const followerParams = newFollower
       ? DEFAULT_VEHICLE_TYPES[newFollower.type]?.driver
       : undefined;
+
+    if (newLeader?.kind === 'obstacle') {
+      const gapAhead = newLeader.lanePosition - vehicle.lanePosition;
+      if (gapAhead < this.obstacleClearDistance) {
+        return false;
+      }
+    }
 
     const desiredAhead =
       (params?.minSpacing ?? 2) + Math.max(4, vehicle.velocity * (params?.timeHeadway ?? 1.2));

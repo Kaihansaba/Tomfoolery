@@ -10,6 +10,7 @@ import {
   NetworkJSON,
   SimulationConfig,
   VehicleCategory,
+  VehicleKind,
   VehicleState,
   Vector2D,
   BackdropConfig,
@@ -74,6 +75,7 @@ type BackdropContext = {
 };
 
 let vehicleCounter = 0;
+let obstacleCounter = 50000;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 3.5;
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
@@ -402,6 +404,10 @@ function pickCategory(): VehicleCategory {
   return VehicleCategory.AUTONOMOUS;
 }
 
+function generateUniqueObstacleId(): string {
+  return `obs_${obstacleCounter++}`;
+}
+
 function createVehicleState(lane: Lane, position: number, category?: VehicleCategory): VehicleState {
   const type = category ?? pickCategory();
   const params = DEFAULT_VEHICLE_TYPES[type];
@@ -416,6 +422,7 @@ function createVehicleState(lane: Lane, position: number, category?: VehicleCate
   return {
     id: vehicleId,
     type,
+    kind: 'normal',
     position: worldPos,
     heading,
     laneId: lane.id,
@@ -430,6 +437,60 @@ function createVehicleState(lane: Lane, position: number, category?: VehicleCate
     followerIds: [],
     color: params.color,
   };
+}
+
+function createObstacleVehicle(lane: Lane, position: number): VehicleState {
+  const clamped = Math.max(0, Math.min(lane.length, position));
+  const { position: worldPos, heading } = projectAlongLane(lane, clamped);
+
+  return {
+    id: generateUniqueObstacleId(),
+    type: VehicleCategory.CAR,
+    kind: 'obstacle',
+    position: worldPos,
+    heading,
+    laneId: lane.id,
+    lanePosition: clamped,
+    laneOffset: 0,
+    velocity: 0,
+    acceleration: 0,
+    isChangingLane: false,
+    targetLaneId: undefined,
+    laneChangeProgress: undefined,
+    leaderId: undefined,
+    followerIds: [],
+    color: '#f97316',
+  };
+}
+
+function addObstacleToLane(engine: TrafficSimulationEngine, lane: Lane, position: number): void {
+  const obstacle = createObstacleVehicle(lane, position);
+  engine.addVehicle(obstacle);
+}
+
+function removeObstacleAt(
+  engine: TrafficSimulationEngine,
+  lane: Lane,
+  position: number,
+  tolerance: number = 5
+): boolean {
+  let targetId: string | undefined;
+  let minGap = Infinity;
+  for (const v of engine.vehicles.values()) {
+    if (v.kind !== 'obstacle') continue;
+    if (v.laneId !== lane.id) continue;
+    const gap = Math.abs(v.lanePosition - position);
+    if (gap <= tolerance && gap < minGap) {
+      minGap = gap;
+      targetId = v.id;
+    }
+  }
+
+  if (targetId) {
+    engine.removeVehicle(targetId);
+    return true;
+  }
+  return false;
 }
 
 function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey): void {
@@ -488,11 +549,42 @@ function drawLane(
   ctx.setLineDash([]);
 }
 
+function drawObstacle(
+  ctx: CanvasRenderingContext2D,
+  view: ViewTransform,
+  vehicle: VehicleState
+): void {
+  const pos = worldToScreen(view, vehicle.position);
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  ctx.rotate(vehicle.heading);
+  ctx.fillStyle = '#f97316';
+  ctx.strokeStyle = '#111827';
+  ctx.lineWidth = 2;
+  ctx.fillRect(-6, -3.5, 12, 7);
+  ctx.strokeRect(-6, -3.5, 12, 7);
+
+  ctx.strokeStyle = '#fff7ed';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  ctx.moveTo(-5, -3.5);
+  ctx.lineTo(5, 3.5);
+  ctx.moveTo(-5, 3.5);
+  ctx.lineTo(5, -3.5);
+  ctx.stroke();
+  ctx.restore();
+}
+
 function drawVehicle(
   ctx: CanvasRenderingContext2D,
   view: ViewTransform,
   vehicle: VehicleState
 ): void {
+  if (vehicle.kind === 'obstacle') {
+    drawObstacle(ctx, view, vehicle);
+    return;
+  }
+
   const base = DEFAULT_VEHICLE_TYPES[vehicle.type];
   const width = clamp(base.physical.width * view.scale, 3, 14);
   const length = clamp(base.physical.length * view.scale, 6, 32);
@@ -616,6 +708,51 @@ function pickClosestEdge(
     }
   }
   return best;
+}
+
+function findClosestLaneAndPosition(
+  view: ViewTransform,
+  network: RoadNetworkImpl,
+  screen: Vector2D
+): { lane: Lane; s: number } | null {
+  const world = screenToWorld(view, screen);
+  let bestLane: Lane | null = null;
+  let bestS = 0;
+  let bestDistSq = Infinity;
+  const maxDistSq = 25 * 25;
+
+  for (const lane of network.lanes.values()) {
+    if (lane.laneType !== 'driving' || lane.centerline.length < 2) continue;
+
+    let accumulated = 0;
+    for (let i = 0; i < lane.centerline.length - 1; i++) {
+      const p0 = lane.centerline[i];
+      const p1 = lane.centerline[i + 1];
+      const segLen = distance(p0, p1);
+      if (segLen < 1e-6) continue;
+
+      const t =
+        ((world.x - p0.x) * (p1.x - p0.x) + (world.y - p0.y) * (p1.y - p0.y)) /
+        (segLen * segLen);
+      const clamped = Math.max(0, Math.min(1, t));
+      const proj = { x: p0.x + (p1.x - p0.x) * clamped, y: p0.y + (p1.y - p0.y) * clamped };
+      const dx = world.x - proj.x;
+      const dy = world.y - proj.y;
+      const distSq = dx * dx + dy * dy;
+      const s = accumulated + clamped * segLen;
+
+      if (distSq < bestDistSq) {
+        bestDistSq = distSq;
+        bestLane = lane;
+        bestS = s;
+      }
+
+      accumulated += segLen;
+    }
+  }
+
+  if (!bestLane || bestDistSq > maxDistSq) return null;
+  return { lane: bestLane, s: Math.max(0, Math.min(bestLane.length, bestS)) };
 }
 
 function drawDirectionArrow(
@@ -1150,6 +1287,8 @@ export default function TrafficSimulationApp() {
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
+  const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
+  const [obstacleRemovalMode, setObstacleRemovalMode] = useState(false);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
@@ -1372,6 +1511,8 @@ export default function TrafficSimulationApp() {
     if (!canvas) return;
 
     setSpawnPointPlacementMode(false);
+    setObstaclePlacementMode(false);
+    setObstacleRemovalMode(false);
     setSpawnPoints([]);
     spawnPointsRef.current = [];
 
@@ -1732,7 +1873,7 @@ export default function TrafficSimulationApp() {
     canvas.style.cursor = 'grab';
 
     const beginPan = (event: PointerEvent) => {
-      if (spawnPointPlacementMode) return;
+      if (spawnPointPlacementMode || obstaclePlacementMode || obstacleRemovalMode) return;
       if (event.button !== 0 && event.button !== 1) return;
       const view = viewRef.current;
       if (!view) return;
@@ -1799,7 +1940,7 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady, spawnPointPlacementMode]);
+  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1810,11 +1951,42 @@ export default function TrafficSimulationApp() {
       const view = viewRef.current;
       if (!runtime || !view) {
         setSpawnPointPlacementMode(false);
+        setObstaclePlacementMode(false);
+        setObstacleRemovalMode(false);
         return;
       }
       const rect = canvas.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
+
+      if (obstaclePlacementMode || obstacleRemovalMode) {
+        const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
+        setSpawnPointPlacementMode(false);
+        if (!laneHit) {
+          setObstaclePlacementMode(false);
+          setObstacleRemovalMode(false);
+          console.warn('No lane found near click for obstacle action');
+          return;
+        }
+
+        if (obstaclePlacementMode) {
+          addObstacleToLane(runtime.engine, laneHit.lane, laneHit.s);
+          setObstaclePlacementMode(false);
+          setObstacleRemovalMode(false);
+          requestRedrawRef.current?.();
+          return;
+        }
+
+        if (obstacleRemovalMode) {
+          const removed = removeObstacleAt(runtime.engine, laneHit.lane, laneHit.s);
+          setObstacleRemovalMode(false);
+          requestRedrawRef.current?.();
+          if (!removed) {
+            console.warn('No obstacle found to remove near click');
+          }
+          return;
+        }
+      }
 
       if (spawnPointPlacementMode) {
         // Only allow nodes with outgoing edges
@@ -1854,7 +2026,7 @@ export default function TrafficSimulationApp() {
     return () => {
       canvas.removeEventListener('click', handleClick);
     };
-  }, [spawnPointPlacementMode, applySelection]);
+  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, applySelection]);
 
   const spawnVehicle = () => {
     const runtime = runtimeRef.current;
@@ -1971,6 +2143,8 @@ export default function TrafficSimulationApp() {
     setSpawnPoints([]);
     spawnPointsRef.current = [];
     setSpawnPointPlacementMode(false);
+    setObstaclePlacementMode(false);
+    setObstacleRemovalMode(false);
     initialize({ seedVehicles: lastInitSeedRef.current });
     setIsRunning(true);
   };
@@ -2091,6 +2265,34 @@ export default function TrafficSimulationApp() {
               }`}
             >
               <Plus size={16} /> Set Spawn Point
+            </button>
+            <button
+              onClick={() => {
+                setSpawnPointPlacementMode(false);
+                setObstacleRemovalMode(false);
+                setObstaclePlacementMode(true);
+              }}
+              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
+                obstaclePlacementMode
+                  ? 'bg-orange-400 text-slate-900'
+                  : 'bg-orange-600 hover:bg-orange-500'
+              }`}
+            >
+              <Plus size={16} /> Place obstacle
+            </button>
+            <button
+              onClick={() => {
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(true);
+              }}
+              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
+                obstacleRemovalMode
+                  ? 'bg-amber-400 text-slate-900'
+                  : 'bg-amber-700 hover:bg-amber-600'
+              }`}
+            >
+              <Minus size={16} /> Remove obstacle
             </button>
           </div>
 
