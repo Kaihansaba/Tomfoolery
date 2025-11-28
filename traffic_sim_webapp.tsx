@@ -78,32 +78,6 @@ const HEILBRONN_STUB: NetworkJSON = {
 
 networks.heilbronn_perchance = HEILBRONN_STUB;
 
-// Lightweight stub to avoid loading the 1.2M-line Heilbronn JSON up front.
-// Provides geoReference/backdrop only; geometry is fetched dynamically.
-const HEILBRONN_STUB: NetworkJSON = {
-  version: '1.0',
-  metadata: {
-    name: 'Heilbronn (dynamic)',
-    description: 'Empty stub; roads load on demand via Overpass',
-  },
-  geoReference: {
-    originLat: 49.18,
-    originLon: 9.15,
-    metersPerDegLat: 111320,
-    metersPerDegLon: 72768.19, // cos(lat)*111320 at ~49.18N
-    projected: true,
-    projection: 'mercator',
-    originMercatorX: 1018573.34,
-    originMercatorY: 6305459.0,
-    flipY: true,
-  },
-  nodes: [],
-  edges: [],
-  intersections: [],
-};
-
-networks.heilbronn_perchance = HEILBRONN_STUB;
-
 type ScenarioKey = keyof typeof networks | 'uploaded_custom';
 
 interface ViewTransform {
