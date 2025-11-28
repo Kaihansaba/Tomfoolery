@@ -33,7 +33,6 @@ import {
   GeoReference,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
-import heilbronnPerchance from './heilbronnperchance.json';
 import testperchance from './testperchance.json';
 import { fastIndexLoad } from './src/utils/mapLoader';
 import { config as appConfig } from './src/config';
@@ -49,9 +48,61 @@ import { extractSubnetwork, launchSubSimulation } from './src/tools/subnetworkEx
 
 const networks = {
   ...exampleNetworks,
-  heilbronn_perchance: heilbronnPerchance as NetworkJSON,
+  heilbronn_perchance: null as unknown as NetworkJSON, // replaced with dynamic stub below
   test_perchance: testperchance as NetworkJSON,
 } satisfies Record<string, NetworkJSON>;
+
+// Lightweight stub to avoid loading the 1.2M-line Heilbronn JSON up front.
+// Provides geoReference/backdrop only; geometry is fetched dynamically.
+const HEILBRONN_STUB: NetworkJSON = {
+  version: '1.0',
+  metadata: {
+    name: 'Heilbronn (dynamic)',
+    description: 'Empty stub; roads load on demand via Overpass',
+  },
+  geoReference: {
+    originLat: 49.18,
+    originLon: 9.15,
+    metersPerDegLat: 111320,
+    metersPerDegLon: 72768.19, // cos(lat)*111320 at ~49.18N
+    projected: true,
+    projection: 'mercator',
+    originMercatorX: 1018573.34,
+    originMercatorY: 6305459.0,
+    flipY: true,
+  },
+  nodes: [],
+  edges: [],
+  intersections: [],
+};
+
+networks.heilbronn_perchance = HEILBRONN_STUB;
+
+// Lightweight stub to avoid loading the 1.2M-line Heilbronn JSON up front.
+// Provides geoReference/backdrop only; geometry is fetched dynamically.
+const HEILBRONN_STUB: NetworkJSON = {
+  version: '1.0',
+  metadata: {
+    name: 'Heilbronn (dynamic)',
+    description: 'Empty stub; roads load on demand via Overpass',
+  },
+  geoReference: {
+    originLat: 49.18,
+    originLon: 9.15,
+    metersPerDegLat: 111320,
+    metersPerDegLon: 72768.19, // cos(lat)*111320 at ~49.18N
+    projected: true,
+    projection: 'mercator',
+    originMercatorX: 1018573.34,
+    originMercatorY: 6305459.0,
+    flipY: true,
+  },
+  nodes: [],
+  edges: [],
+  intersections: [],
+};
+
+networks.heilbronn_perchance = HEILBRONN_STUB;
 
 type ScenarioKey = keyof typeof networks | 'uploaded_custom';
 
@@ -128,13 +179,29 @@ const LOD_FADE_START = 0.9;
 const LOD_FULL = 1.3;
 const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
+const MIN_CHUNK_FETCH_INTERVAL_SEC = 3; // throttle Overpass requests
+const UNDISCOVERED_VIEWPORT_THRESHOLD = 0.2; // 20% of visible area
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
+const DEBUG_FETCH_LOGS = true;
+function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
+  // Mirror the standalone overpass.ts format for consistent JSON structure
+  return `[out:json][timeout:25];
+way["highway"](${south},${west},${north},${east});
+(._;>;);
+out;`;
+}
 const VEHICLE_TARGETS = {
   off: 0,
   low: 120,
   mid: 500,
   high: 1000,
 } as const;
+const POPULATION_MODES = [
+  { key: 'off' as const, label: 'Off', value: VEHICLE_TARGETS.off },
+  { key: 'low' as const, label: 'Low (120)', value: VEHICLE_TARGETS.low },
+  { key: 'mid' as const, label: 'Mid (500)', value: VEHICLE_TARGETS.mid },
+  { key: 'high' as const, label: 'High (1000)', value: VEHICLE_TARGETS.high },
+] as const;
 
 // Car sprite (only used for VehicleCategory.CAR)
 const carSprite: HTMLImageElement | null =
@@ -286,6 +353,16 @@ function getViewBounds(view: ViewTransform, canvas: HTMLCanvasElement, marginPx 
   };
 }
 
+function overlapArea(a: Bounds, b: Bounds): number {
+  const minX = Math.max(a.minX, b.minX);
+  const maxX = Math.min(a.maxX, b.maxX);
+  const minY = Math.max(a.minY, b.minY);
+  const maxY = Math.min(a.maxY, b.maxY);
+  const w = Math.max(0, maxX - minX);
+  const h = Math.max(0, maxY - minY);
+  return w * h;
+}
+
 function boundsIntersect(a: Bounds, b: Bounds): boolean {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
 }
@@ -415,6 +492,24 @@ function computeView(network: RoadNetworkImpl, canvas: HTMLCanvasElement): ViewT
     scale,
     offsetX: padding - minX * scale,
     offsetY: padding - minY * scale,
+  };
+}
+
+function fallbackViewForGeoRef(geoRef: GeoReference, canvas: HTMLCanvasElement): ViewTransform {
+  // Center on origin with a reasonable default scale (roughly a 4km box)
+  const targetSize = 4000; // meters
+  const padding = 80;
+  const scale = Math.max(
+    MIN_ZOOM_SLIDER,
+    Math.min(
+      (canvas.width - padding * 2) / targetSize,
+      (canvas.height - padding * 2) / targetSize
+    )
+  );
+  return {
+    scale,
+    offsetX: canvas.width / 2,
+    offsetY: canvas.height / 2,
   };
 }
 
@@ -1636,8 +1731,7 @@ function extractTrafficLightsFromOSM(
 
 async function fetchChunkAndMerge(
   chunkKey: string,
-  cx: number,
-  cy: number,
+  chunkBounds: Bounds,
   runtime: { network: RoadNetworkImpl; engine: TrafficSimulationEngine },
   chunkCache: Set<string>,
   pendingChunks: Set<string>,
@@ -1648,10 +1742,10 @@ async function fetchChunkAndMerge(
   if (!geoRef) return;
 
   const padding = 50;
-  const worldMin = { x: cx * CHUNK_WORLD_SIZE - padding, y: cy * CHUNK_WORLD_SIZE - padding };
+  const worldMin = { x: chunkBounds.minX - padding, y: chunkBounds.minY - padding };
   const worldMax = {
-    x: (cx + 1) * CHUNK_WORLD_SIZE + padding,
-    y: (cy + 1) * CHUNK_WORLD_SIZE + padding,
+    x: chunkBounds.maxX + padding,
+    y: chunkBounds.maxY + padding,
   };
   const geo1 = worldToGeo(worldMin, geoRef);
   const geo2 = worldToGeo(worldMax, geoRef);
@@ -1660,13 +1754,7 @@ async function fetchChunkAndMerge(
   const west = Math.min(geo1.lon, geo2.lon);
   const east = Math.max(geo1.lon, geo2.lon);
 
-  const query = `[out:json][timeout:25];
-  (
-    way["highway"](${south},${west},${north},${east});
-    node["highway"="traffic_signals"](${south},${west},${north},${east});
-    >;
-  );
-  out;`;
+  const query = buildOverpassQuery(south, west, north, east);
 
   try {
     const res = await fetch(OVERPASS_URL, {
@@ -1688,7 +1776,11 @@ async function fetchChunkAndMerge(
     chunkCache.add(chunkKey);
     onRedraw();
   } catch (err) {
+    if (DEBUG_FETCH_LOGS) {
+      console.error('Chunk fetch failed', { chunkKey, err });
+    } else {
     console.error('Chunk fetch failed', err);
+    }
   } finally {
     pendingChunks.delete(chunkKey);
   }
@@ -1720,8 +1812,10 @@ export default function TrafficSimulationApp() {
   const dynamicChunksRef = useRef<Set<string>>(new Set());
   const chunkCacheRef = useRef<Set<string>>(new Set());
   const pendingChunkFetchRef = useRef<Set<string>>(new Set());
+  const lastChunkFetchRef = useRef<number>(0);
   const baseNetworkJSONRef = useRef<NetworkJSON | null>(null);
   const dynamicActiveRef = useRef(false);
+  const hasUserZoomedRef = useRef(false);
   const [showBackdrop, setShowBackdrop] = useState(true);
   const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('osm');
   const [zoomLevel, setZoomLevel] = useState(1);
@@ -1731,7 +1825,7 @@ export default function TrafficSimulationApp() {
   const requestRedrawRef = useRef<{ fn: () => void }>({ fn: () => {} });
   const redrawRafIdRef = useRef<number | undefined>(undefined);
 
-  const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
+  const [scenario, setScenario] = useState<ScenarioKey>('heilbronn_perchance');
   const [isRunning, setIsRunning] = useState(true);
   const [timeScale, setTimeScale] = useState(1);
   const [hud, setHud] = useState<HudState>({
@@ -1756,6 +1850,8 @@ export default function TrafficSimulationApp() {
   const trafficLightsRef = useRef<TrafficLight[]>([]);
   const vehicleTargetRef = useRef<number>(VEHICLE_TARGETS.off);
   const [vehicleTarget, setVehicleTarget] = useState<number>(VEHICLE_TARGETS.off);
+  const pendingTopUpRef = useRef<boolean>(false);
+  const lastVehicleCountRef = useRef<number>(0);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
@@ -1852,48 +1948,119 @@ export default function TrafficSimulationApp() {
       const runtime = runtimeRef.current;
       if (!canvas || !runtime?.network.geoReference) return;
 
-      const centerWorld = {
-        x: (canvas.width / 2 - view.offsetX) / view.scale,
-        y: (canvas.height / 2 - view.offsetY) / view.scale,
+      // 1) Viewport bounds in world space (real-world coordinates)
+      const viewBounds = getViewBounds(view, canvas, 40);
+      if (!hasUserZoomedRef.current) return;
+      const visibleArea = Math.max(
+        1,
+        (viewBounds.maxX - viewBounds.minX) * (viewBounds.maxY - viewBounds.minY)
+      );
+      const viewCenter = {
+        x: (viewBounds.minX + viewBounds.maxX) / 2,
+        y: (viewBounds.minY + viewBounds.maxY) / 2,
       };
-      const cx = Math.floor(centerWorld.x / CHUNK_WORLD_SIZE);
-      const cy = Math.floor(centerWorld.y / CHUNK_WORLD_SIZE);
-      const key = `${cx}:${cy}`;
-      if (!dynamicChunksRef.current.has(key)) {
-        dynamicChunksRef.current.add(key);
-        if (!dynamicActiveRef.current) {
-          baseNetworkJSONRef.current = runtime.network.toJSON();
-          dynamicActiveRef.current = true;
+
+      // 2) Determine which chunks overlap the viewport and how much of the view they cover
+      const cxMin = Math.floor(viewBounds.minX / CHUNK_WORLD_SIZE);
+      const cxMax = Math.floor(viewBounds.maxX / CHUNK_WORLD_SIZE);
+      const cyMin = Math.floor(viewBounds.minY / CHUNK_WORLD_SIZE);
+      const cyMax = Math.floor(viewBounds.maxY / CHUNK_WORLD_SIZE);
+
+      let missingArea = 0;
+      const candidates: Array<{ key: string; bounds: Bounds; dist: number }> = [];
+
+      for (let cx = cxMin; cx <= cxMax; cx++) {
+        for (let cy = cyMin; cy <= cyMax; cy++) {
+          const key = `${cx}:${cy}`;
+          const chunkBounds: Bounds = {
+            minX: cx * CHUNK_WORLD_SIZE,
+            maxX: (cx + 1) * CHUNK_WORLD_SIZE,
+            minY: cy * CHUNK_WORLD_SIZE,
+            maxY: (cy + 1) * CHUNK_WORLD_SIZE,
+          };
+          const overlap = overlapArea(viewBounds, chunkBounds);
+          if (overlap <= 0) continue;
+
+          const cached = chunkCacheRef.current.has(key);
+          const pending = pendingChunkFetchRef.current.has(key);
+          if (!cached && !pending) {
+            missingArea += overlap;
+            const dx = (chunkBounds.minX + chunkBounds.maxX) / 2 - viewCenter.x;
+            const dy = (chunkBounds.minY + chunkBounds.maxY) / 2 - viewCenter.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            candidates.push({ key, bounds: chunkBounds, dist });
+          }
         }
-        if (!chunkCacheRef.current.has(key) && !pendingChunkFetchRef.current.has(key)) {
-          pendingChunkFetchRef.current.add(key);
-          fetchChunkAndMerge(
-            key,
-            cx,
-            cy,
-            runtime,
-            chunkCacheRef.current,
-            pendingChunkFetchRef.current,
-            requestRedrawRef.current.fn,
-            newLights => {
-              if (newLights.length === 0) return;
-              setTrafficLights(prev => {
-                const existing = new Set(prev.map(tl => tl.id));
-                const merged = [...prev];
-                for (const tl of newLights) {
-                  if (!existing.has(tl.id)) {
-                    merged.push(tl);
-                    existing.add(tl.id);
-                  }
-                }
-                trafficLightsRef.current = merged;
-                return merged;
-              });
-            }
+      }
+
+      const missingRatio = missingArea / visibleArea;
+      const now = performance.now();
+      if (
+        missingRatio < UNDISCOVERED_VIEWPORT_THRESHOLD ||
+        now - lastChunkFetchRef.current < MIN_CHUNK_FETCH_INTERVAL_SEC * 1000
+      ) {
+        if (DEBUG_FETCH_LOGS) {
+          console.debug(
+            '[Chunks] skip fetch',
+            { missingRatio: missingRatio.toFixed(3) },
+            { throttleMs: (now - lastChunkFetchRef.current).toFixed(0) }
           );
         }
-        // Placeholder for future fetch/merge of road data for this chunk.
+        return;
       }
+
+      const next = candidates.sort((a, b) => a.dist - b.dist)[0];
+      if (!next) return;
+
+      if (!dynamicActiveRef.current) {
+        baseNetworkJSONRef.current = runtime.network.toJSON();
+        dynamicActiveRef.current = true;
+      }
+
+      dynamicChunksRef.current.add(next.key);
+      pendingChunkFetchRef.current.add(next.key);
+      lastChunkFetchRef.current = now;
+
+      if (DEBUG_FETCH_LOGS) {
+        const centerWorld = {
+          x: (viewBounds.minX + viewBounds.maxX) / 2,
+          y: (viewBounds.minY + viewBounds.maxY) / 2,
+        };
+        const centerGeo =
+          runtime.network.geoReference && worldToGeo(centerWorld, runtime.network.geoReference);
+        console.debug('[Chunks] fetch start', {
+          key: next.key,
+          bounds: next.bounds,
+          missingRatio: missingRatio.toFixed(3),
+          centerWorld,
+          centerGeo,
+          inFlight: pendingChunkFetchRef.current.size,
+        });
+      }
+
+      fetchChunkAndMerge(
+        next.key,
+        next.bounds,
+        runtime,
+        chunkCacheRef.current,
+        pendingChunkFetchRef.current,
+        requestRedrawRef.current.fn,
+        newLights => {
+          if (newLights.length === 0) return;
+          setTrafficLights(prev => {
+            const existing = new Set(prev.map(tl => tl.id));
+            const merged = [...prev];
+            for (const tl of newLights) {
+              if (!existing.has(tl.id)) {
+                merged.push(tl);
+                existing.add(tl.id);
+              }
+            }
+            trafficLightsRef.current = merged;
+            return merged;
+          });
+        }
+      );
     },
     [scenario, showBackdrop]
   );
@@ -1957,6 +2124,7 @@ export default function TrafficSimulationApp() {
 
   useEffect(() => {
     vehicleTargetRef.current = vehicleTarget;
+    pendingTopUpRef.current = vehicleTarget > 0;
   }, [vehicleTarget]);
 
   const applyZoom = useCallback(
@@ -1964,6 +2132,7 @@ export default function TrafficSimulationApp() {
       const canvas = canvasRef.current;
       const view = viewRef.current;
       if (!canvas || !view) return;
+      hasUserZoomedRef.current = true;
       const clamped = clamp(newScale, MIN_ZOOM_SLIDER, MAX_ZOOM_SLIDER);
       const anchorPoint = anchor ?? { x: canvas.width / 2, y: canvas.height / 2 };
       const worldBefore = {
@@ -2005,6 +2174,7 @@ export default function TrafficSimulationApp() {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    hasUserZoomedRef.current = false;
     setSpawnPointPlacementMode(false);
     setObstaclePlacementMode(false);
     setObstacleRemovalMode(false);
@@ -2046,7 +2216,9 @@ export default function TrafficSimulationApp() {
         );
       }
     }
-    const network = RoadNetworkImpl.fromJSON(networkJSON);
+    // Build full network so heilbronnperchance.json is the initial scenario content
+    const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
+    const network = sourceNetwork;
     const simConfig: SimulationConfig = {
       timeStep: 1 / 60,
       targetFPS: 60,
@@ -2069,7 +2241,21 @@ export default function TrafficSimulationApp() {
       enabled: showBackdrop,
       theme: BACKDROP_THEMES[backdropTheme] || DEFAULT_BACKDROP,
     };
+    // Initial camera framing
     viewRef.current = computeView(network, canvas);
+    if (network.lanes.size === 0 && network.geoReference) {
+      viewRef.current = fallbackViewForGeoRef(network.geoReference, canvas);
+    }
+    if (network.geoReference) {
+      // Center over Heilbronn on load
+      const heilbronnCenter = geoToWorld(49.142, 9.22, network.geoReference);
+      const scale = viewRef.current.scale;
+      viewRef.current = {
+        scale,
+        offsetX: canvas.width / 2 - heilbronnCenter.x * scale,
+        offsetY: canvas.height / 2 - heilbronnCenter.y * scale,
+      };
+    }
     lastFrameRef.current = performance.now();
     hudAccumulatorRef.current = 0;
     frameCountRef.current = 0;
@@ -2098,8 +2284,10 @@ export default function TrafficSimulationApp() {
       avgSpeed: 0,
       fps: 0,
     });
+    pendingTopUpRef.current = vehicleTargetRef.current > 0;
+    lastVehicleCountRef.current = engine.vehicles.size;
 
-    if (shouldSeedVehicles) {
+    if (shouldSeedVehicles && sourceNetwork.lanes.size > 0) {
       setTimeout(() => {
         seedVehicles(engine, scenario);
         drawScene(
@@ -2121,7 +2309,10 @@ export default function TrafficSimulationApp() {
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
         setHud(h => ({ ...h, vehicles: engine.vehicles.size }));
+        lastVehicleCountRef.current = engine.vehicles.size;
       }, 0);
+    } else if (shouldSeedVehicles) {
+      console.warn('Skipping vehicle seeding: no base lanes loaded yet (deferred until chunks load).');
     }
   };
 
@@ -2349,15 +2540,16 @@ export default function TrafficSimulationApp() {
         frameCountRef.current = 0;
       }
 
-      // Passive population controller: top up to target if below
+      // Passive population controller: top up after despawns or target changes
       const target = vehicleTargetRef.current;
-      const deficit = Math.max(0, target - runtime.engine.vehicles.size);
-      if (deficit > 0) {
-        const attempts = Math.min(deficit, 8);
-        for (let i = 0; i < attempts; i++) {
-          spawnVehicle();
-        }
+      const currentCount = runtime.engine.vehicles.size;
+      const dropped = currentCount < lastVehicleCountRef.current;
+      if (target > 0 && (pendingTopUpRef.current || (dropped && currentCount < target))) {
+        topUpPopulation(pendingTopUpRef.current ? 'target-change' : 'deficit');
+      } else if (target === 0) {
+        pendingTopUpRef.current = false;
       }
+      lastVehicleCountRef.current = runtime.engine.vehicles.size;
 
       if (!isRunningRef.current) return;
       rafRef.current = requestAnimationFrame(tick);
@@ -2400,6 +2592,7 @@ export default function TrafficSimulationApp() {
           x: event.clientX - rect.left,
           y: event.clientY - rect.top,
         };
+        hasUserZoomedRef.current = true;
         const worldBefore = {
           x: (cursor.x - view.offsetX) / view.scale,
           y: (cursor.y - view.offsetY) / view.scale,
@@ -2823,11 +3016,11 @@ export default function TrafficSimulationApp() {
     };
   }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, applySelection, toolMode, addToolState, trafficLightTimer, subnetworkSelection]);
 
-  const spawnVehicle = () => {
+  const spawnVehicle = (): boolean => {
     const runtime = runtimeRef.current;
     const canvas = canvasRef.current;
     const view = viewRef.current;
-    if (!runtime || !canvas || !view) return;
+    if (!runtime || !canvas || !view) return false;
 
     // Get visible bounds to filter spawn points
     const visibleBounds = getViewBounds(view, canvas, 0);
@@ -2885,7 +3078,7 @@ export default function TrafficSimulationApp() {
         const choice = visibleSpawnPoints[Math.floor(Math.random() * visibleSpawnPoints.length)];
         const lane = pickLaneFromNode(choice);
         if (lane && trySpawnInLane(lane)) {
-          return;
+          return true;
         }
       }
       // If no visible spawn points, fall through to default behavior
@@ -2894,7 +3087,7 @@ export default function TrafficSimulationApp() {
     const lanes = Array.from(runtime.network.lanes.values()).filter(
       l => l.laneType === 'driving'
     );
-    if (lanes.length === 0) return;
+    if (lanes.length === 0) return false;
 
     const bestLane = lanes.reduce(
       (best, lane) => {
@@ -2907,7 +3100,42 @@ export default function TrafficSimulationApp() {
       { lane: lanes[0], count: runtime.engine.getVehiclesInLane(lanes[0].id).length }
     ).lane;
 
-    trySpawnInLane(bestLane);
+    return trySpawnInLane(bestLane);
+  };
+
+  const topUpPopulation = (reason: 'deficit' | 'target-change' = 'deficit') => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+
+    const target = vehicleTargetRef.current;
+    if (target <= 0) {
+      pendingTopUpRef.current = false;
+      return;
+    }
+
+    const current = runtime.engine.vehicles.size;
+    const deficit = target - current;
+    if (deficit <= 0) {
+      pendingTopUpRef.current = false;
+      return;
+    }
+
+    // Limit attempts to avoid runaway spawning when there is no space
+    const maxAttempts = Math.min(Math.max(deficit * 2, deficit), 40);
+    let spawned = 0;
+    for (let i = 0; i < maxAttempts && spawned < deficit; i++) {
+      if (spawnVehicle()) {
+        spawned += 1;
+      }
+    }
+
+    // If still under target, try again on the next frame
+    pendingTopUpRef.current = runtime.engine.vehicles.size < target;
+
+    // Keep the drop detector in sync after manual target changes
+    if (reason === 'target-change') {
+      lastVehicleCountRef.current = runtime.engine.vehicles.size;
+    }
   };
 
   const runtimeForSelection = runtimeRef.current;
@@ -3547,6 +3775,33 @@ export default function TrafficSimulationApp() {
                       Choose intensity to quickly inject more vehicles into the scene.
                     </p>
                   </div>
+                </div>
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                    <span>Population target</span>
+                    <span className="font-mono text-white">
+                      {vehicleTarget === 0 ? 'Off' : `${vehicleTarget} vehicles`}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {POPULATION_MODES.map(mode => (
+                      <button
+                        key={mode.key}
+                        onClick={() => setVehicleTarget(mode.value)}
+                        className={`rounded-xl px-3 py-2 border text-sm transition ${
+                          vehicleTarget === mode.value
+                            ? 'border-orange-400 bg-orange-500/20 text-white'
+                            : 'border-orange-500/25 bg-black/60 text-orange-100 hover:border-orange-400'
+                        }`}
+                      >
+                        {mode.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-orange-100/70">
+                    Keeps the scene topped up after cars despawn. Start empty, then choose low / mid /
+                    high (120 / 500 / 1000).
+                  </p>
                 </div>
               </div>
 
