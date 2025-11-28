@@ -56,8 +56,8 @@ type BackdropContext = {
 };
 
 let vehicleCounter = 0;
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 3.5;
+const MIN_ZOOM = 0.00005;
+const MAX_ZOOM = 4;
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
 const MAX_ZOOM_SLIDER = MAX_ZOOM;
 const LOD_HIDE_ROADS = 0.7;
@@ -501,14 +501,16 @@ function drawBackdrop(
   const tileX1 = Math.floor(lonToTile(maxLon + epsilon, zoom));
   const tileY0 = Math.floor(latToTile(maxLat + epsilon, zoom));
   const tileY1 = Math.floor(latToTile(minLat - epsilon, zoom));
+  const numTiles = 2 ** zoom;
 
   for (let x = tileX0; x <= tileX1; x++) {
     for (let y = tileY0; y <= tileY1; y++) {
+      const wrappedX = ((x % numTiles) + numTiles) % numTiles;
       const url = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
         .replace('{z}', String(zoom))
-        .replace('{x}', String(x))
+        .replace('{x}', String(wrappedX))
         .replace('{y}', String(y));
-      const key = `${url}`;
+      const key = `${zoom}-${wrappedX}-${y}`;
 
       const lonLeft = tileToLon(x, zoom);
       const lonRight = tileToLon(x + 1, zoom);
@@ -855,6 +857,7 @@ export default function TrafficSimulationApp() {
   const [showBackdrop, setShowBackdrop] = useState(true);
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
+  const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('mouse');
   const requestRedrawRef = useRef<() => void>(() => {});
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
@@ -877,40 +880,6 @@ export default function TrafficSimulationApp() {
       const canvas = canvasRef.current;
       const runtime = runtimeRef.current;
       if (!canvas || !runtime?.network.geoReference) return;
-
-      if (view.scale < LOD_FULL) {
-        dynamicChunksRef.current.clear();
-        chunkCacheRef.current.clear();
-        pendingChunkFetchRef.current.clear();
-        if (dynamicActiveRef.current && baseNetworkJSONRef.current) {
-          const restored = RoadNetworkImpl.fromJSON(baseNetworkJSONRef.current);
-          runtime.network = restored;
-          runtime.engine.network = restored;
-          runtime.engine.reset();
-          if (lastInitSeedRef.current) {
-            seedVehicles(runtime.engine, scenario);
-          }
-          backdropContextRef.current = {
-            ...(backdropContextRef.current || {
-              tileCache: tileCacheRef.current,
-              pendingTiles: pendingTileRef.current,
-              requestRedraw: requestRedrawRef.current,
-            }),
-            network: restored,
-            enabled: showBackdrop,
-          };
-          dynamicActiveRef.current = false;
-          drawScene(
-            canvas,
-            runtime.engine,
-            view,
-            backdropContextRef.current || undefined,
-            spawnPointsRef.current,
-            restored
-          );
-        }
-        return;
-      }
 
       const centerWorld = {
         x: (canvas.width / 2 - view.offsetX) / view.scale,
@@ -1216,7 +1185,14 @@ export default function TrafficSimulationApp() {
       const absDeltaX = Math.abs(event.deltaX);
       const isTrackpadLike =
         event.deltaMode === WheelEvent.DOM_DELTA_PIXEL && absDeltaX < 50 && absDeltaY < 50;
-      const wantsZoom = event.ctrlKey || event.metaKey || (!isTrackpadLike && absDeltaY > absDeltaX);
+      const wantsZoom =
+        event.ctrlKey ||
+        event.metaKey ||
+        inputMode === 'trackpad' ||
+        (!isTrackpadLike && absDeltaY > absDeltaX);
+
+      const zoomStep = inputMode === 'trackpad' ? 0.0025 : 0.001;
+      const panScale = inputMode === 'trackpad' ? 1.8 : 1;
 
       if (wantsZoom) {
         const rect = canvas.getBoundingClientRect();
@@ -1229,7 +1205,7 @@ export default function TrafficSimulationApp() {
           y: (cursor.y - view.offsetY) / view.scale,
         };
 
-        const zoomFactor = Math.exp(-event.deltaY * 0.001);
+        const zoomFactor = Math.exp(-event.deltaY * zoomStep);
         const newScale = clamp(view.scale * zoomFactor, MIN_ZOOM_SLIDER, MAX_ZOOM_SLIDER);
 
         viewRef.current = {
@@ -1241,8 +1217,8 @@ export default function TrafficSimulationApp() {
       } else {
         viewRef.current = {
           ...view,
-          offsetX: view.offsetX - event.deltaX,
-          offsetY: view.offsetY - event.deltaY,
+          offsetX: view.offsetX - event.deltaX * panScale,
+          offsetY: view.offsetY - event.deltaY * panScale,
         };
       }
 
@@ -1260,7 +1236,7 @@ export default function TrafficSimulationApp() {
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
-  }, [canvasReady]);
+  }, [canvasReady, inputMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1584,6 +1560,15 @@ export default function TrafficSimulationApp() {
               onChange={e => applyZoom(parseFloat(e.target.value))}
               className="w-full"
             />
+            <div className="flex items-center justify-between text-xs text-slate-300 mt-2">
+              <span className="text-slate-400">Input mode</span>
+              <button
+                onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
+                className="px-3 py-2 rounded bg-slate-800 hover:bg-slate-700 text-sm"
+              >
+                {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
+              </button>
+            </div>
           </div>
         </div>
 

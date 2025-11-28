@@ -42,3 +42,7 @@ If `npm` is not available in your shell, install Node.js first and then restart 
 - **Canvas is blank** – ensure the browser tab has focus and GPU acceleration is enabled.
 - **`npm` command not found** – install Node.js 18+, reopen your terminal, then rerun the commands above.
 - **Typescript errors about JSON imports** – delete `node_modules`, run `npm install` to ensure `tsconfig.json` is picked up by the compiler.
+
+problem : when fetching from online api the format isnt correct,
+solution format it and save on comouter
+consequence : information saved on computer, might explode ;boom:
