@@ -1292,6 +1292,73 @@ function enforceTrafficLights(engine: TrafficSimulationEngine, lights: TrafficLi
   }
 }
 
+function findNearestLaneAt(
+  network: RoadNetworkImpl,
+  world: Vector2D,
+  maxDist = 40
+): { lane: Lane; s: number; heading: number } | null {
+  let best: { lane: Lane; s: number; heading: number; distSq: number } | null = null;
+
+  for (const lane of network.lanes.values()) {
+    if (lane.laneType !== 'driving' || lane.centerline.length < 2) continue;
+    let accumulated = 0;
+    for (let i = 0; i < lane.centerline.length - 1; i++) {
+      const p0 = lane.centerline[i];
+      const p1 = lane.centerline[i + 1];
+      const segLen = distance(p0, p1);
+      if (segLen < 1e-6) continue;
+
+      const t =
+        ((world.x - p0.x) * (p1.x - p0.x) + (world.y - p0.y) * (p1.y - p0.y)) /
+        (segLen * segLen);
+      const clamped = Math.max(0, Math.min(1, t));
+      const proj = { x: p0.x + (p1.x - p0.x) * clamped, y: p0.y + (p1.y - p0.y) * clamped };
+      const dx = world.x - proj.x;
+      const dy = world.y - proj.y;
+      const distSq = dx * dx + dy * dy;
+      const s = accumulated + clamped * segLen;
+      if (!best || distSq < best.distSq) {
+        const heading = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+        best = { lane, s, heading, distSq };
+      }
+      accumulated += segLen;
+    }
+  }
+
+  if (best && best.distSq <= maxDist * maxDist) {
+    return { lane: best.lane, s: best.s, heading: best.heading };
+  }
+  return null;
+}
+
+function extractTrafficLightsFromOSM(
+  osm: OSMResponse,
+  geoRef: GeoReference,
+  network: RoadNetworkImpl,
+  chunkKey: string
+): TrafficLight[] {
+  const lights: TrafficLight[] = [];
+  for (const el of osm.elements) {
+    if (el.type !== 'node') continue;
+    const n = el as OSMNode;
+    if (n.tags?.highway !== 'traffic_signals') continue;
+    const world = geoToWorld(n.lat, n.lon, geoRef);
+    const snapped = findNearestLaneAt(network, world, 40);
+    if (!snapped) continue;
+    lights.push({
+      id: `tl_${chunkKey}_${n.id}`,
+      position: projectAlongLane(snapped.lane, snapped.s).position,
+      heading: snapped.heading,
+      laneId: snapped.lane.id,
+      lanePosition: snapped.s,
+      state: 'green',
+      timerSeconds: 0,
+      nextSwitchTime: Infinity,
+    });
+  }
+  return lights;
+}
+
 async function fetchChunkAndMerge(
   chunkKey: string,
   cx: number,
@@ -1299,7 +1366,8 @@ async function fetchChunkAndMerge(
   runtime: { network: RoadNetworkImpl; engine: TrafficSimulationEngine },
   chunkCache: Set<string>,
   pendingChunks: Set<string>,
-  onRedraw: () => void
+  onRedraw: () => void,
+  addTrafficLights?: (lights: TrafficLight[]) => void
 ) {
   const geoRef = runtime.network.geoReference;
   if (!geoRef) return;
@@ -1320,6 +1388,7 @@ async function fetchChunkAndMerge(
   const query = `[out:json][timeout:25];
   (
     way["highway"](${south},${west},${north},${east});
+    node["highway"="traffic_signals"](${south},${west},${north},${east});
     >;
   );
   out;`;
@@ -1337,6 +1406,10 @@ async function fetchChunkAndMerge(
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
+    if (addTrafficLights) {
+      const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
+      if (extracted.length > 0) addTrafficLights(extracted);
+    }
     chunkCache.add(chunkKey);
     onRedraw();
   } catch (err) {
@@ -1504,7 +1577,22 @@ export default function TrafficSimulationApp() {
             runtime,
             chunkCacheRef.current,
             pendingChunkFetchRef.current,
-            requestRedrawRef.current.fn
+            requestRedrawRef.current.fn,
+            newLights => {
+              if (newLights.length === 0) return;
+              setTrafficLights(prev => {
+                const existing = new Set(prev.map(tl => tl.id));
+                const merged = [...prev];
+                for (const tl of newLights) {
+                  if (!existing.has(tl.id)) {
+                    merged.push(tl);
+                    existing.add(tl.id);
+                  }
+                }
+                trafficLightsRef.current = merged;
+                return merged;
+              });
+            }
           );
         }
         // Placeholder for future fetch/merge of road data for this chunk.
