@@ -84,14 +84,58 @@ export class RoadNetworkImpl implements RoadNetwork {
     return Math.sqrt(dx * dx + dy * dy);
   }
 
+  /**
+   * Attach isolated nodes to nearby edge geometry. If a node sits exactly on
+   * an edge interior point, split the edge so vehicles can reach the node.
+   * If it sits on an endpoint, re-anchor the edge to that node.
+   */
   private connectDanglingNodesToGeometry(): void {
-    const tolerance = 0.75; // meters
+    const tolerance = 1.0; // meters
+
+    const splitEdgeAt = (edge: Edge, nodeId: NodeID, idx: number) => {
+      if (!edge.geometry || edge.geometry.length < 2) return;
+      const node = this.nodes.get(nodeId);
+      if (!node) return;
+
+      const geomA = edge.geometry.slice(0, idx + 1);
+      const geomB = edge.geometry.slice(idx);
+      // Ensure node position is explicitly present at split
+      geomA[geomA.length - 1] = node.position;
+      geomB[0] = node.position;
+
+      const baseId = edge.id;
+      // Remove old lanes and edge from nodes
+      edge.lanes.forEach(l => this.lanes.delete(l.id));
+      const fromNode = this.nodes.get(edge.fromNode);
+      const toNode = this.nodes.get(edge.toNode);
+      if (fromNode) fromNode.outgoingEdges = fromNode.outgoingEdges.filter(id => id !== baseId);
+      if (toNode) toNode.incomingEdges = toNode.incomingEdges.filter(id => id !== baseId);
+      this.edges.delete(baseId);
+
+      const leftEdge: Edge = {
+        ...edge,
+        id: `${baseId}_a`,
+        toNode: nodeId,
+        geometry: geomA,
+        lanes: [],
+      };
+      const rightEdge: Edge = {
+        ...edge,
+        id: `${baseId}_b`,
+        fromNode: nodeId,
+        geometry: geomB,
+        lanes: [],
+      };
+      this.addEdge(leftEdge);
+      this.addEdge(rightEdge);
+    };
+
     for (const node of this.nodes.values()) {
       const needsOutgoing = node.outgoingEdges.length === 0;
       const needsIncoming = node.incomingEdges.length === 0;
       if (!needsOutgoing && !needsIncoming) continue;
 
-      for (const edge of this.edges.values()) {
+      for (const edge of Array.from(this.edges.values())) {
         if (!edge.geometry || edge.geometry.length === 0) continue;
         const start = edge.geometry[0];
         const end = edge.geometry[edge.geometry.length - 1];
@@ -119,6 +163,15 @@ export class RoadNetworkImpl implements RoadNetwork {
           }
           if (!node.incomingEdges.includes(edge.id)) {
             node.incomingEdges.push(edge.id);
+          }
+        }
+
+        // If still isolated, check interior geometry points and split edge
+        if ((node.incomingEdges.length === 0 || node.outgoingEdges.length === 0) && edge.geometry.length > 2) {
+          const hitIdx = edge.geometry.findIndex(pt => this.pointDistance(pt, node.position) <= tolerance);
+          if (hitIdx > 0 && hitIdx < edge.geometry.length - 1) {
+            splitEdgeAt(edge, node.id, hitIdx);
+            break; // Edge replaced; move to next node
           }
         }
       }
