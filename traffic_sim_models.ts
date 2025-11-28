@@ -249,7 +249,7 @@ export class MOBILModel implements ILaneChangeModel {
 
     const isSafe = this.checkSafety(vehicle, targetLane, newLeader, newFollower);
     if (targetBlockedByObstacle) {
-      return { shouldChange: false, utility: -Infinity, isSafe: false, reason: 'blocked-by-obstacle' };
+      return { shouldChange: false, utility: -Infinity, isSafe: false, reason: 'none' };
     }
     if (!isSafe) {
       return { shouldChange: false, utility: -Infinity, isSafe: false, reason: 'none' };

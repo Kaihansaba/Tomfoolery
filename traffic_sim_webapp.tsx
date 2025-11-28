@@ -75,14 +75,9 @@ type BackdropContext = {
 };
 
 let vehicleCounter = 0;
-<<<<<<< HEAD
 const MIN_ZOOM = 0.00005;
 const MAX_ZOOM = 4;
-=======
 let obstacleCounter = 50000;
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 3.5;
->>>>>>> 4bca96ce24813d7a77c270134158b634a60a3a06
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
 const MAX_ZOOM_SLIDER = MAX_ZOOM;
 const LOD_HIDE_ROADS = 0.7;
@@ -1952,14 +1947,14 @@ export default function TrafficSimulationApp() {
           addObstacleToLane(runtime.engine, laneHit.lane, laneHit.s);
           setObstaclePlacementMode(false);
           setObstacleRemovalMode(false);
-          requestRedrawRef.current?.();
+          requestRedrawRef.current.fn();
           return;
         }
 
         if (obstacleRemovalMode) {
           const removed = removeObstacleAt(runtime.engine, laneHit.lane, laneHit.s);
           setObstacleRemovalMode(false);
-          requestRedrawRef.current?.();
+          requestRedrawRef.current.fn();
           if (!removed) {
             console.warn('No obstacle found to remove near click');
           }
