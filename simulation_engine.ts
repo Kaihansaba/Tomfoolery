@@ -320,12 +320,11 @@ export class TrafficSimulationEngine implements SimulationEngine {
     const laneChangeDuration = 3.0; // seconds
     const progressIncrement = this.config.timeStep / laneChangeDuration;
     
-    vehicle.laneChangeProgress += progressIncrement;
-    
     const currentLane = this.network.getLane(vehicle.laneId);
     const targetLane = this.network.getLane(vehicle.targetLaneId);
     
     if (currentLane && targetLane) {
+      const nextProgress = Math.min(1, vehicle.laneChangeProgress + progressIncrement);
       const lateralDistance = (targetLane.index - currentLane.index) * currentLane.width;
       const k = 12; // controls steepness of sigmoid
       const logistic = (x: number) => 1 / (1 + Math.exp(-k * (x - 0.5)));
@@ -333,9 +332,29 @@ export class TrafficSimulationEngine implements SimulationEngine {
       const end = logistic(1);
       const eased = Math.min(
         1,
-        Math.max(0, (logistic(vehicle.laneChangeProgress) - start) / (end - start))
+        Math.max(0, (logistic(nextProgress) - start) / (end - start))
       );
       vehicle.laneOffset = lateralDistance * eased;
+
+      const leader = this.findLeaderDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
+      const follower = this.findFollowerDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
+      const targetEdge = this.network.getEdge(targetLane.edgeId);
+      const priorityRoad =
+        (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
+      const minMergeGap = priorityRoad ? 8 : 5;
+
+      const proposedPos = vehicle.lanePosition;
+      const safeAhead = !leader || leader.lanePosition - proposedPos >= minMergeGap;
+      const safeBehind = !follower || proposedPos - follower.lanePosition >= minMergeGap;
+      if (!safeAhead || !safeBehind) {
+        // Yield: pause merge until a gap opens
+        vehicle.laneChangeProgress = Math.min(vehicle.laneChangeProgress, 0.95);
+        vehicle.velocity = Math.min(vehicle.velocity, 0.5);
+        vehicle.acceleration = -2;
+        return;
+      }
+
+      vehicle.laneChangeProgress = nextProgress;
     }
     
     if (vehicle.laneChangeProgress >= 1.0) {
@@ -343,7 +362,10 @@ export class TrafficSimulationEngine implements SimulationEngine {
       if (targetLaneId) {
         const leader = this.findLeaderDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
         const follower = this.findFollowerDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
-        const minMergeGap = 2.0;
+        const targetEdge = this.network.getEdge(this.network.getLane(targetLaneId)?.edgeId || '');
+        const priorityRoad =
+          (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
+        const minMergeGap = priorityRoad ? 8 : 5;
 
         let newPos = vehicle.lanePosition;
         if (leader) {
@@ -353,19 +375,16 @@ export class TrafficSimulationEngine implements SimulationEngine {
           newPos = Math.max(newPos, follower.lanePosition + minMergeGap);
         }
 
-        // If there is no room, abandon this lane change and keep the current lane.
+        // If there is no room, hold and keep yielding instead of aborting.
         if (
           (leader && follower && leader.lanePosition - follower.lanePosition < minMergeGap * 2) ||
           newPos < 0 ||
           (leader && newPos > leader.lanePosition - minMergeGap) ||
           (follower && newPos < follower.lanePosition + minMergeGap)
         ) {
-          console.log(`❌ Vehicle ${vehicle.id} aborted lane change: ${oldLaneId} → ${targetLaneId} (not enough space)`);
-          vehicle.isChangingLane = false;
-          vehicle.targetLaneId = undefined;
-          vehicle.laneChangeProgress = undefined;
-          vehicle.laneOffset = 0;
-          this.laneChangeCooldown.set(vehicle.id, this.currentTime);
+          vehicle.laneChangeProgress = 0.95;
+          vehicle.velocity = Math.min(vehicle.velocity, 0.5);
+          vehicle.acceleration = -2;
           return;
         }
 
