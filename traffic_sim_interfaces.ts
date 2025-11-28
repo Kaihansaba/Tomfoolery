@@ -6,6 +6,7 @@ export type VehicleID = string;
 export type NodeID = string;
 export type EdgeID = string;
 export type LaneID = string;
+export type VehicleKind = 'normal' | 'obstacle';
 
 export interface Vector2D {
   x: number;
@@ -218,6 +219,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
 export interface VehicleState {
   id: VehicleID;
   type: VehicleCategory;
+  kind?: VehicleKind; // default "normal"
   
   // Position
   position: Vector2D;
