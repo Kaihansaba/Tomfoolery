@@ -1,4 +1,4 @@
-import { Edge, Node } from '../traffic_sim_interfaces';
+import { Edge, Node } from '../../traffic_sim_interfaces';
 
 export type Subnetwork = {
   nodes: Record<string, Node>;
@@ -43,9 +43,6 @@ export function extractSubnetwork(
   };
 }
 
-export function launchSubSimulation(json: Subnetwork) {
-  // Basic launcher: open a new tab with JSON for now.
-  const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  window.open(url, '_blank');
+export function launchSubSimulation(_json: Subnetwork) {
+  // Intentionally left as a no-op; extraction now only downloads the JSON.
 }

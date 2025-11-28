@@ -1,13 +1,13 @@
 # New Tools
 
 ## Add Node + Draw Edge
-- Toggle the tool in the UI (Add Node/Edge panel).
+- Toggle the tool in the UI (top-right tools dropdown, next to obstacle tools).
 - Click on the map to place a new node.
 - Click an existing node to connect it. Configure lanes (1–4) and direction (forward/backward/bidirectional).
 - Press ESC to cancel.
 
 ## Subnetwork Simulation Extractor
-- Toggle Subnetwork mode.
+- Toggle Subnetwork mode (top-right tools dropdown).
 - Click nodes to add/remove them from the selection. Selected nodes and their internal edges are highlighted.
 - Click “Extract Sub-Simulation” to build the isolated JSON; it is kept in memory and can be downloaded as `subsimulation.json`.
 - Boundary nodes (inlets/outlets) are identified where selected nodes connect to outside nodes.

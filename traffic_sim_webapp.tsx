@@ -14,6 +14,7 @@ import {
   TrafficCone,
   Eye,
   EyeOff,
+  Trash,
 } from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
@@ -36,6 +37,15 @@ import heilbronnPerchance from './heilbronnperchance.json';
 import testperchance from './testperchance.json';
 import { fastIndexLoad } from './src/utils/mapLoader';
 import { config as appConfig } from './src/config';
+import {
+  startAddNodeAndEdge,
+  cancelAddNodeAndEdge,
+  handleAddNodeEdgeClick,
+  setLanes as setAddToolLanes,
+  setDirection as setAddToolDirection,
+  type AddNodeAndEdgeState,
+} from './src/tools/addNodeAndEdgeTool';
+import { extractSubnetwork, launchSubSimulation } from './src/tools/subnetworkExtractor';
 
 const networks = {
   ...exampleNetworks,
@@ -43,7 +53,7 @@ const networks = {
   test_perchance: testperchance as NetworkJSON,
 } satisfies Record<string, NetworkJSON>;
 
-type ScenarioKey = keyof typeof networks;
+type ScenarioKey = keyof typeof networks | 'uploaded_custom';
 
 interface ViewTransform {
   scale: number;
@@ -1011,7 +1021,11 @@ function drawScene(
   selection?: Selection,
   highlightSpawnNodes: boolean = false,
   showRoadEdges: boolean = true,
-  trafficLights: TrafficLight[] = []
+  trafficLights: TrafficLight[] = [],
+  simulationMode: 'micro' | 'macro' = 'micro',
+  toolMode: 'none' | 'addEdge' | 'subnetwork' | 'delete' = 'none',
+  subnetworkSelection: Set<string> = new Set(),
+  pendingAddNodeId?: string
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -1113,6 +1127,109 @@ function drawScene(
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  // Subnetwork selection highlights
+  if (toolMode === 'subnetwork' && network) {
+    ctx.save();
+    const allowBulk = view.scale >= 0.3;
+    if (allowBulk) {
+      ctx.strokeStyle = 'rgba(245,158,11,0.45)';
+      ctx.lineWidth = 2;
+      for (const node of network.nodes.values()) {
+        const nodeBounds = {
+          minX: node.position.x - 10,
+          maxX: node.position.x + 10,
+          minY: node.position.y - 10,
+          maxY: node.position.y + 10,
+        };
+        if (!boundsIntersect(nodeBounds, visibleBounds)) continue;
+        const p = worldToScreen(view, node.position);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.strokeStyle = '#f59e0b';
+    ctx.fillStyle = 'rgba(245,158,11,0.25)';
+    ctx.lineWidth = 3;
+    for (const nodeId of subnetworkSelection) {
+      const node = network.getNode(nodeId);
+      if (!node) continue;
+      const p = worldToScreen(view, node.position);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.strokeStyle = '#fbbf24';
+    ctx.lineWidth = 4;
+    for (const edge of network.edges.values()) {
+      if (!subnetworkSelection.has(edge.fromNode) || !subnetworkSelection.has(edge.toNode)) continue;
+      const polyline = getEdgePolyline(network, edge.id);
+      if (!polyline) continue;
+      const pts = polyline.map(pt => worldToScreen(view, pt));
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // Add-edge tool visual affordances
+  if (toolMode === 'addEdge' && network && view.scale >= 0.2) {
+    ctx.save();
+    ctx.strokeStyle = '#a855f7';
+    ctx.lineWidth = 2.5;
+    for (const node of network.nodes.values()) {
+      const nodeBounds = {
+        minX: node.position.x - 12,
+        maxX: node.position.x + 12,
+        minY: node.position.y - 12,
+        maxY: node.position.y + 12,
+      };
+      if (!boundsIntersect(nodeBounds, visibleBounds)) continue;
+      const p = worldToScreen(view, node.position);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+      ctx.stroke();
+      if (pendingAddNodeId && pendingAddNodeId === node.id) {
+        ctx.fillStyle = 'rgba(168,85,247,0.25)';
+        ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+
+  if (toolMode === 'delete' && network && view.scale >= 0.25) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(248,113,113,0.65)';
+    ctx.lineWidth = 2;
+    for (const node of network.nodes.values()) {
+      const nodeBounds = {
+        minX: node.position.x - 10,
+        maxX: node.position.x + 10,
+        minY: node.position.y - 10,
+        maxY: node.position.y + 10,
+      };
+      if (!boundsIntersect(nodeBounds, visibleBounds)) continue;
+      const p = worldToScreen(view, node.position);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = 'rgba(248,113,113,0.35)';
+    for (const edge of network.edges.values()) {
+      const polyline = getEdgePolyline(network, edge.id);
+      if (!polyline) continue;
+      const pts = polyline.map(pt => worldToScreen(view, pt));
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x, pts[0].y);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   if (selection && network) {
@@ -1540,11 +1657,22 @@ export default function TrafficSimulationApp() {
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
+  const [simulationMode, setSimulationMode] = useState<'micro' | 'macro'>('micro');
+  const [toolMode, setToolMode] = useState<'none' | 'addEdge' | 'subnetwork' | 'delete'>('none');
+  const [addToolState, setAddToolState] = useState<AddNodeAndEdgeState>(() => startAddNodeAndEdge());
+  const [subnetworkSelection, setSubnetworkSelection] = useState<Set<string>>(new Set());
+  const customNetworkRef = useRef<NetworkJSON | null>(null);
+  const [customNetworkName, setCustomNetworkName] = useState<string>('Uploaded map');
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const selectionRef = useRef<Selection | undefined>(undefined);
   const isRunningRef = useRef(true);
   const lastSuggestionUpdateRef = useRef(0);
   const swipeStartRef = useRef<number | null>(null);
   const pendingIndexRef = useRef<Promise<any> | null>(null);
+
+  useEffect(() => {
+    requestRedrawRef.current.fn();
+  }, [subnetworkSelection, toolMode, addToolState.pendingNodeId]);
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -1562,10 +1690,14 @@ export default function TrafficSimulationApp() {
         selectionRef.current,
         spawnPointPlacementMode,
         showRoadEdges,
-        trafficLightsRef.current
+        trafficLightsRef.current,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId
       );
     }
-  }, [spawnPointPlacementMode, showRoadEdges]);
+  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   const updateStreetSuggestions = useCallback(() => {
     const runtime = runtimeRef.current;
@@ -1604,6 +1736,9 @@ export default function TrafficSimulationApp() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         applySelection(undefined);
+        setToolMode('none');
+        setAddToolState(startAddNodeAndEdge());
+        setSubnetworkSelection(new Set());
       }
     };
     window.addEventListener('keydown', handler);
@@ -1684,13 +1819,18 @@ export default function TrafficSimulationApp() {
           runtime.network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current,
+          simulationMode,
+          toolMode,
+          subnetworkSelection,
+          addToolState.pendingNodeId
         );
         updateStreetSuggestions();
         updateDynamicChunks(view);
       }
     });
-  }, [spawnPointPlacementMode, showRoadEdges, updateStreetSuggestions, updateDynamicChunks]);
+  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, updateStreetSuggestions, updateDynamicChunks, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
   requestRedrawRef.current.fn = requestRedraw;
@@ -1742,13 +1882,17 @@ export default function TrafficSimulationApp() {
           selectionRef.current,
           spawnPointPlacementMode,
           showRoadEdges,
-          trafficLightsRef.current
+          trafficLightsRef.current,
+          simulationMode,
+          toolMode,
+          subnetworkSelection,
+          addToolState.pendingNodeId
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
       }
     },
-    [updateStreetSuggestions, updateDynamicChunks]
+    [updateStreetSuggestions, updateDynamicChunks, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]
   );
 
   const initialize = (options?: { seedVehicles?: boolean }) => {
@@ -1774,9 +1918,12 @@ export default function TrafficSimulationApp() {
     dynamicActiveRef.current = false;
     baseNetworkJSONRef.current = null;
 
-    const networkJSON = networks[scenario];
+    const networkJSON =
+      scenario === 'uploaded_custom'
+        ? customNetworkRef.current || networks['simple_highway']
+        : networks[scenario as keyof typeof networks];
 
-    if (appConfig.optimizations.chunkedIndex) {
+    if (scenario !== 'uploaded_custom' && appConfig.optimizations.chunkedIndex) {
       const urlMap: Partial<Record<ScenarioKey, string>> = {
         heilbronn_perchance: '/heilbronnperchance.json',
         test_perchance: '/testperchance.json',
@@ -1826,7 +1973,11 @@ export default function TrafficSimulationApp() {
       selectionRef.current,
       spawnPointPlacementMode,
       showRoadEdges,
-      trafficLightsRef.current
+      trafficLightsRef.current,
+      simulationMode,
+      toolMode,
+      subnetworkSelection,
+      addToolState.pendingNodeId
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -1850,7 +2001,11 @@ export default function TrafficSimulationApp() {
           selectionRef.current,
           spawnPointPlacementMode,
           showRoadEdges,
-          trafficLightsRef.current
+          trafficLightsRef.current,
+          simulationMode,
+          toolMode,
+          subnetworkSelection,
+          addToolState.pendingNodeId
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
@@ -1951,11 +2106,15 @@ export default function TrafficSimulationApp() {
         selectionRef.current,
         spawnPointPlacementMode,
         showRoadEdges,
-        trafficLightsRef.current
+        trafficLightsRef.current,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId
       );
       updateDynamicChunks(view);
     }
-  }, [spawnPoints, spawnPointPlacementMode, showRoadEdges]);
+  }, [spawnPoints, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1993,7 +2152,12 @@ export default function TrafficSimulationApp() {
           runtime.network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current,
+          simulationMode,
+          toolMode,
+          subnetworkSelection,
+          addToolState.pendingNodeId
         );
         setZoomLevel(viewRef.current.scale);
         updateDynamicChunks(viewRef.current);
@@ -2043,7 +2207,11 @@ export default function TrafficSimulationApp() {
         selectionRef.current,
         spawnPointPlacementMode,
         showRoadEdges,
-        trafficLightsRef.current
+        trafficLightsRef.current,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId
       );
 
       hudAccumulatorRef.current += delta;
@@ -2080,7 +2248,7 @@ export default function TrafficSimulationApp() {
       isRunningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges]);
+  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2143,7 +2311,11 @@ export default function TrafficSimulationApp() {
         selectionRef.current,
         spawnPointPlacementMode,
         showRoadEdges,
-        trafficLightsRef.current
+        trafficLightsRef.current,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2152,7 +2324,7 @@ export default function TrafficSimulationApp() {
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
-  }, [canvasReady, inputMode]);
+  }, [canvasReady, inputMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2204,7 +2376,11 @@ export default function TrafficSimulationApp() {
         selectionRef.current,
         spawnPointPlacementMode,
         showRoadEdges,
-        trafficLightsRef.current
+        trafficLightsRef.current,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2234,11 +2410,55 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode]);
+  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    const removeVehiclesOnEdge = (edgeId: string) => {
+      const runtime = runtimeRef.current;
+      if (!runtime) return;
+      const edge = runtime.network.getEdge(edgeId);
+      if (!edge) return;
+      const laneIds = edge.lanes.map(l => l.id);
+      for (const v of Array.from(runtime.engine.vehicles.values())) {
+        if (laneIds.includes(v.laneId)) {
+          runtime.engine.removeVehicle(v.id);
+        }
+      }
+    };
+
+    const removeEdgeWithCleanup = (edgeId: string) => {
+      const runtime = runtimeRef.current;
+      if (!runtime) return false;
+      const edge = runtime.network.getEdge(edgeId);
+      if (!edge) return false;
+      removeVehiclesOnEdge(edgeId);
+      edge.lanes.forEach(l => runtime.network.lanes.delete(l.id));
+      const fromNode = runtime.network.getNode(edge.fromNode);
+      const toNode = runtime.network.getNode(edge.toNode);
+      if (fromNode) {
+        fromNode.outgoingEdges = fromNode.outgoingEdges.filter(id => id !== edgeId);
+      }
+      if (toNode) {
+        toNode.incomingEdges = toNode.incomingEdges.filter(id => id !== edgeId);
+      }
+      runtime.network.edges.delete(edgeId);
+      return true;
+    };
+
+    const removeNodeAndEdges = (nodeId: string) => {
+      const runtime = runtimeRef.current;
+      if (!runtime) return false;
+      const node = runtime.network.getNode(nodeId);
+      if (!node) return false;
+      const connected = [...node.incomingEdges, ...node.outgoingEdges];
+      connected.forEach(eid => removeEdgeWithCleanup(eid));
+      runtime.network.nodes.delete(nodeId);
+      runtime.network.intersections.delete(nodeId as any);
+      return true;
+    };
 
     const handleClick = (event: MouseEvent) => {
       const runtime = runtimeRef.current;
@@ -2248,6 +2468,7 @@ export default function TrafficSimulationApp() {
         setObstaclePlacementMode(false);
         setObstacleRemovalMode(false);
         setTrafficLightPlacementMode(false);
+        setToolMode('none');
         return;
       }
       const rect = canvas.getBoundingClientRect();
@@ -2371,6 +2592,76 @@ export default function TrafficSimulationApp() {
         return;
       }
 
+      if (toolMode === 'subnetwork') {
+        const nodeHit = pickClosestNode(view, runtime.network, { x, y });
+        if (nodeHit) {
+          setSubnetworkSelection(prev => {
+            const next = new Set(prev);
+            if (next.has(nodeHit.id)) next.delete(nodeHit.id);
+            else next.add(nodeHit.id);
+            return next;
+          });
+          applySelection(undefined);
+          return;
+        }
+      }
+
+      if (toolMode === 'delete') {
+        const nodeHit = pickClosestNode(view, runtime.network, { x, y });
+        if (nodeHit && removeNodeAndEdges(nodeHit.id)) {
+          runtime.network.rebuildLaneConnectivity();
+          setSelection(undefined);
+          selectionRef.current = undefined;
+          requestRedrawRef.current.fn();
+          return;
+        }
+        const edgeHit = pickClosestEdge(view, runtime.network, { x, y });
+        if (edgeHit) {
+          const edge = runtime.network.getEdge(edgeHit.id);
+          const fromNodeId = edge?.fromNode;
+          const toNodeId = edge?.toNode;
+          if (removeEdgeWithCleanup(edgeHit.id)) {
+            const from = fromNodeId ? runtime.network.getNode(fromNodeId) : undefined;
+            const to = toNodeId ? runtime.network.getNode(toNodeId) : undefined;
+            if (from && from.incomingEdges.length === 0 && from.outgoingEdges.length === 0) {
+              runtime.network.nodes.delete(from.id);
+            }
+            if (to && to.incomingEdges.length === 0 && to.outgoingEdges.length === 0) {
+              runtime.network.nodes.delete(to.id);
+            }
+            runtime.network.rebuildLaneConnectivity();
+            setSelection(undefined);
+            selectionRef.current = undefined;
+            requestRedrawRef.current.fn();
+            return;
+          }
+        }
+      }
+
+      if (toolMode === 'addEdge') {
+        const world = screenToWorld(view, { x, y });
+        const nodeHit = pickClosestNode(view, runtime.network, { x, y }, 12);
+        const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
+        if (!addToolState.active) {
+          setAddToolState(startAddNodeAndEdge());
+        }
+        const res = handleAddNodeEdgeClick(
+          addToolState,
+          runtime.network,
+          world,
+          nodeHit?.id,
+          laneHit ? { lane: laneHit.lane, s: laneHit.s } : undefined
+        );
+        setAddToolState({ ...addToolState });
+        if (res) {
+          requestRedrawRef.current.fn();
+          if (res.newEdge) {
+            setToolMode('none');
+          }
+        }
+        return;
+      }
+
       if (spawnPointPlacementMode) {
         // Only allow nodes with outgoing edges
         const closest = findClosestNode(view, x, y, runtime.network, true);
@@ -2409,7 +2700,7 @@ export default function TrafficSimulationApp() {
     return () => {
       canvas.removeEventListener('click', handleClick);
     };
-  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, applySelection]);
+  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, applySelection, toolMode, addToolState, trafficLightTimer, subnetworkSelection]);
 
   const spawnVehicle = () => {
     const runtime = runtimeRef.current;
@@ -2691,6 +2982,46 @@ export default function TrafficSimulationApp() {
                   },
                 },
                 {
+                  key: 'addEdge',
+                  label: 'Add Node + Edge',
+                  icon: GitBranchPlus,
+                  action: () => {
+                    setToolMode('addEdge');
+                    setAddToolState(startAddNodeAndEdge());
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(false);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(false);
+                    setTrafficLightPlacementMode(false);
+                  },
+                },
+                {
+                  key: 'subnetwork',
+                  label: 'Select Subnetwork',
+                  icon: MapPin,
+                  action: () => {
+                    setToolMode('subnetwork');
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(false);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(false);
+                    setTrafficLightPlacementMode(false);
+                  },
+                },
+                {
+                  key: 'delete',
+                  label: 'Delete Nodes/Edges',
+                  icon: Trash,
+                  action: () => {
+                    setToolMode('delete');
+                    setPanelOpen(true);
+                    setSpawnPointPlacementMode(false);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(false);
+                    setTrafficLightPlacementMode(false);
+                  },
+                },
+                {
                   key: 'roads',
                   label: 'Add New Roads',
                   icon: GitBranchPlus,
@@ -2713,7 +3044,7 @@ export default function TrafficSimulationApp() {
                     }}
                     className={`flex items-center gap-3 px-4 py-3 w-full text-left text-sm hover:bg-orange-500/10 transition ${
                       idx !== 0 ? 'border-t border-orange-500/15' : ''
-                    }`}
+                    } ${toolMode === tool.key ? 'bg-orange-500/15' : ''}`}
                   >
                     <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
                       <Icon size={16} className="text-orange-200" />
@@ -2877,6 +3208,71 @@ export default function TrafficSimulationApp() {
               }`}
             >
               <div className="grid sm:grid-cols-2 gap-3">
+                {toolMode === 'addEdge' && (
+                  <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Add Node + Edge</div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span>Lanes</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={4}
+                        value={addToolState.lanes}
+                        onChange={e =>
+                          setAddToolState(s => ({
+                            ...s,
+                            lanes: Math.max(1, Math.min(4, Number(e.target.value) || 1)),
+                          }))
+                        }
+                        className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-2 py-1 text-sm"
+                      />
+                    </div>
+                    <div className="flex gap-2 text-xs">
+                      {(['forward', 'backward', 'bidirectional'] as const).map(dir => (
+                        <button
+                          key={dir}
+                          onClick={() => setAddToolState(s => ({ ...s, direction: dir }))}
+                          className={`flex-1 rounded-xl px-2 py-1 border transition ${
+                            addToolState.direction === dir
+                              ? 'border-orange-400 bg-orange-500/20'
+                              : 'border-orange-500/25 bg-black/60'
+                          }`}
+                        >
+                          {dir}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {toolMode === 'subnetwork' && (
+                  <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Subnetwork</div>
+                    <p className="text-[11px] text-orange-100/70">Click nodes to toggle selection. Internal edges highlight.</p>
+                    <button
+                      onClick={() => {
+                        const runtime = runtimeRef.current;
+                        if (!runtime) return;
+                        const result = extractSubnetwork(
+                          runtime.network.nodes,
+                          runtime.network.edges,
+                          subnetworkSelection
+                        );
+                        const blob = new Blob([JSON.stringify(result, null, 2)], {
+                          type: 'application/json',
+                        });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = 'subsimulation.json';
+                        a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      className="w-full rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                    >
+                      Extract Sub-Simulation
+                    </button>
+                  </div>
+                )}
                 <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
                   <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
                   <select
@@ -2889,7 +3285,40 @@ export default function TrafficSimulationApp() {
                     <option value="roundabout">Four-arm roundabout</option>
                     <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
                     <option value="test_perchance">Test Perchance (full)</option>
+                    {customNetworkRef.current && (
+                      <option value="uploaded_custom">{customNetworkName}</option>
+                    )}
                   </select>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                    >
+                      Import JSON
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept=".json,application/json"
+                      className="hidden"
+                      onChange={async e => {
+                        const file = e.target.files?.[0];
+                        if (!file) return;
+                        try {
+                          const text = await file.text();
+                          const parsed = JSON.parse(text);
+                          customNetworkRef.current = parsed as NetworkJSON;
+                          setCustomNetworkName(file.name || 'Uploaded map');
+                          setScenario('uploaded_custom');
+                          initialize({ seedVehicles: false });
+                        } catch (err) {
+                          console.error('Failed to load JSON', err);
+                        } finally {
+                          e.target.value = '';
+                        }
+                      }}
+                    />
+                  </div>
                   <p className="text-[11px] text-orange-100/70">
                     Swiping up reveals advanced tuning without leaving the viewport.
                   </p>
