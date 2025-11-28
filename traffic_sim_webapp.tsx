@@ -32,6 +32,7 @@ import {
   BackdropConfig,
   GeoReference,
 } from './traffic_sim_interfaces';
+import heilbronnPerchance from './heilbronnperchance.json';
 import exampleNetworks from './example_networks.json';
 import testperchance from './testperchance.json';
 import { fastIndexLoad } from './src/utils/mapLoader';
@@ -49,6 +50,7 @@ import { extractSubnetwork, launchSubSimulation } from './src/tools/subnetworkEx
 const networks = {
   ...exampleNetworks,
   heilbronn_perchance: null as unknown as NetworkJSON, // replaced with dynamic stub below
+  heilbronn_perchance_full: heilbronnPerchance as NetworkJSON,
   test_perchance: testperchance as NetworkJSON,
 } satisfies Record<string, NetworkJSON>;
 
@@ -3608,7 +3610,8 @@ export default function TrafficSimulationApp() {
                     <option value="simple_highway">Highway with ramps</option>
                     <option value="urban_intersection">Signalized intersection</option>
                     <option value="roundabout">Four-arm roundabout</option>
-                    <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+                    <option value="heilbronn_perchance">Heilbronn Perchance (dynamic)</option>
+                    <option value="heilbronn_perchance_full">Heilbronn Perchance (imported JSON)</option>
                     <option value="test_perchance">Test Perchance (full)</option>
                     {customNetworkRef.current && (
                       <option value="uploaded_custom">{customNetworkName}</option>
