@@ -1,0 +1,8 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" fill="none">
+  <path d="M0 0h512v512H0z" fill="none"/>
+  <path d="M72 214h120" stroke="white" stroke-width="38" stroke-linecap="square"/>
+  <path d="M72 302h220c36 0 66-30 66-66v-24h80" stroke="white" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M384 164l64 48-64 48" stroke="white" stroke-width="38" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="64" y="206" fill="white" font-family="Montserrat, 'Segoe UI', sans-serif" font-size="104" font-weight="700" letter-spacing="2">TRA</text>
+  <text x="64" y="330" fill="white" font-family="Montserrat, 'Segoe UI', sans-serif" font-size="116" font-weight="800" letter-spacing="2">FIXED</text>
+</svg>
