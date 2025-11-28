@@ -87,6 +87,36 @@ const HEATMAP_CELL_SIZE = 80; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 
+// Car sprite (only used for VehicleCategory.CAR)
+const carSprite: HTMLImageElement | null =
+  typeof Image !== 'undefined' ? new Image() : null;
+let carSpriteLoaded = false;
+
+if (carSprite) {
+  carSprite.src = '/car_sprite.png';
+  carSprite.onload = () => {
+    carSpriteLoaded = true;
+  };
+  carSprite.onerror = () => {
+    carSpriteLoaded = false;
+  };
+}
+
+// Bus sprite (only used for VehicleCategory.BUS)
+const busSprite: HTMLImageElement | null =
+  typeof Image !== 'undefined' ? new Image() : null;
+let busSpriteLoaded = false;
+
+if (busSprite) {
+  busSprite.src = '/bus_sprite.png';
+  busSprite.onload = () => {
+    busSpriteLoaded = true;
+  };
+  busSprite.onerror = () => {
+    busSpriteLoaded = false;
+  };
+}
+
 type OSMNode = {
   type: 'node';
   id: number;
@@ -599,18 +629,32 @@ function drawVehicle(
   
   ctx.translate(pos.x, pos.y);
   ctx.rotate(vehicle.heading);
-  ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
-  ctx.strokeStyle = '#0b0f1a';
-  ctx.lineWidth = 1;
 
-  ctx.beginPath();
-  ctx.rect(-length / 2, -width / 2, length, width);
-  ctx.fill();
-  ctx.stroke();
+  const useCarSprite =
+    vehicle.type === VehicleCategory.CAR && carSprite && carSpriteLoaded;
+  const useBusSprite =
+    vehicle.type === VehicleCategory.BUS && busSprite && busSpriteLoaded;
 
-  ctx.fillStyle = '#f5f5f5';
-  ctx.fillRect(length / 2 - 2, -width / 2 + 1, 2, 2);
-  ctx.fillRect(length / 2 - 2, width / 2 - 3, 2, 2);
+  if (useCarSprite && carSprite) {
+    // Scale the car sprite to the vehicle's physical dimensions on screen
+    ctx.drawImage(carSprite, -length / 2, -width / 2, length, width);
+  } else if (useBusSprite && busSprite) {
+    // Scale the bus sprite to the vehicle's physical dimensions on screen
+    ctx.drawImage(busSprite, -length / 2, -width / 2, length, width);
+  } else {
+    ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
+    ctx.strokeStyle = '#0b0f1a';
+    ctx.lineWidth = 1;
+
+    ctx.beginPath();
+    ctx.rect(-length / 2, -width / 2, length, width);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(length / 2 - 2, -width / 2 + 1, 2, 2);
+    ctx.fillRect(length / 2 - 2, width / 2 - 3, 2, 2);
+  }
   ctx.restore();
 }
 
