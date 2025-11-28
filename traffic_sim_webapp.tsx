@@ -448,6 +448,55 @@ function getLaneBounds(lane: Lane): Bounds {
   return bounds;
 }
 
+function coerceArray<T>(val: any): T[] {
+  if (!val) return [];
+  if (Array.isArray(val)) return val as T[];
+  if (val instanceof Map) return Array.from(val.values()) as T[];
+  if (typeof val === 'object') return Object.values(val) as T[];
+  return [];
+}
+
+function coerceNetworkJSON(raw: any): NetworkJSON | null {
+  if (!raw) return null;
+  const nodesRaw = coerceArray<any>(raw.nodes);
+  const edgesRaw = coerceArray<any>(raw.edges);
+  const nodes: NetworkJSON['nodes'] = nodesRaw.map(n => {
+    const x = n.x ?? n.position?.x ?? 0;
+    const y = n.y ?? n.position?.y ?? 0;
+    return {
+      id: n.id ?? n.node_id ?? String(n.id ?? Math.random()),
+      x,
+      y,
+      type: n.type ?? 'waypoint',
+      properties: n.properties ?? n.metadata,
+    };
+  });
+  const edges: NetworkJSON['edges'] = edgesRaw.map(e => {
+    const geom = e.geometry ?? e.centerline ?? [];
+    return {
+      id: e.id ?? e.edge_id ?? String(Math.random()),
+      from: e.from ?? e.fromNode ?? e.u ?? e.start ?? '',
+      to: e.to ?? e.toNode ?? e.v ?? e.end ?? '',
+      lanes: e.lanes ?? e.laneCount ?? 1,
+      geometry: geom,
+      speedLimit: e.speedLimit ?? e.speed_limit,
+      roadType: e.roadType ?? e.type,
+      properties: e.properties ?? e.metadata,
+    };
+  });
+  if (!nodes.length || !edges.length) {
+    console.warn('Uploaded JSON missing nodes or edges');
+    return null;
+  }
+  return {
+    version: raw.version ?? '1.0',
+    geoReference: raw.geoReference ?? { originLat: 0, originLon: 0, metersPerDegLat: 1, metersPerDegLon: 1, projection: 'simple' },
+    nodes,
+    edges,
+    intersections: raw.intersections ?? [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tile helpers (Web Mercator)
 // ---------------------------------------------------------------------------
@@ -1980,6 +2029,10 @@ export default function TrafficSimulationApp() {
       scenario === 'uploaded_custom'
         ? customNetworkRef.current || networks['simple_highway']
         : networks[scenario as keyof typeof networks];
+    if (!networkJSON) {
+      console.error('No network JSON available for scenario', scenario);
+      return;
+    }
 
     if (scenario !== 'uploaded_custom' && appConfig.optimizations.chunkedIndex) {
       const urlMap: Partial<Record<ScenarioKey, string>> = {
@@ -3375,7 +3428,12 @@ export default function TrafficSimulationApp() {
                         try {
                           const text = await file.text();
                           const parsed = JSON.parse(text);
-                          customNetworkRef.current = parsed as NetworkJSON;
+                          const coerced = coerceNetworkJSON(parsed);
+                          if (!coerced) {
+                            console.warn('Uploaded file is not a valid network JSON');
+                            return;
+                          }
+                          customNetworkRef.current = coerced;
                           setCustomNetworkName(file.name || 'Uploaded map');
                           setScenario('uploaded_custom');
                           initialize({ seedVehicles: false });
