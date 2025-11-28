@@ -1,5 +1,19 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Play, Pause, Plus, Minus, Zap, ChevronUp, Search, Sparkles, MapPin, Shield, Eraser, GitBranchPlus } from 'lucide-react';
+import {
+  Play,
+  Pause,
+  Plus,
+  Minus,
+  Zap,
+  ChevronUp,
+  Search,
+  Sparkles,
+  MapPin,
+  Shield,
+  Eraser,
+  GitBranchPlus,
+  TrafficCone,
+} from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
 import { IDMModel, MOBILModel } from './traffic_sim_models';
@@ -2025,7 +2039,7 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode]);
+  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2124,18 +2138,21 @@ export default function TrafficSimulationApp() {
       })();
 
       if (clickedLight && runtime) {
-        setTrafficLights(prev =>
-          prev.map(tl =>
+        setTrafficLights(prev => {
+          const next: TrafficLight[] = prev.map(tl =>
             tl.id === clickedLight.id
               ? {
                   ...tl,
-                  state: tl.state === 'green' ? 'red' : 'green',
+                  state: (tl.state === 'green' ? 'red' : 'green') as TrafficLightState,
                   nextSwitchTime:
                     tl.timerSeconds > 0 ? runtime.engine.currentTime + tl.timerSeconds : Infinity,
                 }
               : tl
-          )
-        );
+          );
+          trafficLightsRef.current = next;
+          return next;
+        });
+        requestRedrawRef.current.fn();
         return;
       }
 
@@ -2177,7 +2194,7 @@ export default function TrafficSimulationApp() {
     return () => {
       canvas.removeEventListener('click', handleClick);
     };
-  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, applySelection]);
+  }, [spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, applySelection]);
 
   const spawnVehicle = () => {
     const runtime = runtimeRef.current;
@@ -2411,38 +2428,53 @@ export default function TrafficSimulationApp() {
                   key: 'spawn',
                   label: 'Spawn Point',
                   icon: MapPin,
-                  action: () => {
-                    setPanelOpen(true);
-                    setSpawnPointPlacementMode(true);
-                    setObstaclePlacementMode(false);
-                    setObstacleRemovalMode(false);
-                  },
-                },
-                {
-                  key: 'place',
-                  label: 'Place Obstacle',
-                  icon: Shield,
-                  action: () => {
-                    setPanelOpen(true);
-                    setSpawnPointPlacementMode(false);
-                    setObstacleRemovalMode(false);
-                    setObstaclePlacementMode(true);
-                  },
-                },
-                {
-                  key: 'remove',
-                  label: 'Remove Obstacle',
-                  icon: Eraser,
-                  action: () => {
-                    setPanelOpen(true);
-                    setSpawnPointPlacementMode(false);
-                    setObstaclePlacementMode(false);
-                    setObstacleRemovalMode(true);
-                  },
-                },
-                {
-                  key: 'roads',
-                  label: 'Add New Roads',
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(true);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(false);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'place',
+              label: 'Place Obstacle',
+              icon: Shield,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstacleRemovalMode(false);
+                setObstaclePlacementMode(true);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'remove',
+              label: 'Remove Obstacle',
+              icon: Eraser,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(true);
+                setTrafficLightPlacementMode(false);
+              },
+            },
+            {
+              key: 'light',
+              label: 'Traffic Light',
+              icon: TrafficCone,
+              action: () => {
+                setPanelOpen(true);
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(false);
+                setTrafficLightPlacementMode(true);
+              },
+            },
+            {
+              key: 'roads',
+              label: 'Add New Roads',
                   icon: GitBranchPlus,
                   action: () => setShowBackdrop(true),
                 },
@@ -2466,6 +2498,22 @@ export default function TrafficSimulationApp() {
                   </button>
                 );
               })}
+              <div className="border-t border-orange-500/15 bg-black/70 px-4 py-3 text-xs text-orange-100/80 flex items-center gap-2">
+                <span>Light timer (s)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={300}
+                  value={trafficLightTimer}
+                  onChange={e =>
+                    setTrafficLightTimer(
+                      Math.max(0, Math.min(300, Number(e.target.value) || 0))
+                    )
+                  }
+                  className="w-16 rounded bg-slate-900 border border-orange-500/40 px-2 py-1 text-right text-white"
+                />
+                <span className="text-orange-300 text-[10px]">(0 = manual)</span>
+              </div>
             </div>
           </div>
         </div>
