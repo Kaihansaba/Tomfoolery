@@ -1393,6 +1393,7 @@ export default function TrafficSimulationApp() {
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
   const selectionRef = useRef<Selection | undefined>(undefined);
+  const isRunningRef = useRef(true);
   const lastSuggestionUpdateRef = useRef(0);
   const swipeStartRef = useRef<number | null>(null);
   const applySelection = useCallback((sel?: Selection) => {
@@ -1817,12 +1818,15 @@ export default function TrafficSimulationApp() {
   }, []);
 
   useEffect(() => {
+    isRunningRef.current = isRunning;
     if (!isRunning) {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       return;
     }
 
     const tick = (timestamp: number) => {
+      if (!isRunningRef.current) return;
+
       const runtime = runtimeRef.current;
       const canvas = canvasRef.current;
       const view = viewRef.current;
@@ -1878,11 +1882,14 @@ export default function TrafficSimulationApp() {
         frameCountRef.current = 0;
       }
 
+      if (!isRunningRef.current) return;
       rafRef.current = requestAnimationFrame(tick);
     };
 
+    lastFrameRef.current = performance.now();
     rafRef.current = requestAnimationFrame(tick);
     return () => {
+      isRunningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges]);
