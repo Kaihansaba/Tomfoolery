@@ -113,7 +113,7 @@ export const DEFAULT_VEHICLE_TYPES: Record<VehicleCategory, VehicleTypeConfig> =
   [VehicleCategory.TRUCK]: {
     category: VehicleCategory.TRUCK,
     physical: {
-      length: 16.0,
+      length: 12.0,
       width: 2.5,
       maxAccel: 1.0,
       maxDecel: 3.5,

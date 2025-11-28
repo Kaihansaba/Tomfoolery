@@ -198,6 +198,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   private updateVehicles(dt: number, laneVehicles: Map<LaneID, VehicleState[]>): void {
+    const toRemove: VehicleID[] = [];
     for (const vehicle of this.vehicles.values()) {
       if (vehicle.kind === 'obstacle') {
         vehicle.velocity = 0;
@@ -215,10 +216,9 @@ export class TrafficSimulationEngine implements SimulationEngine {
       const lane = this.network.getLane(vehicle.laneId);
       if (!lane) continue;
 
-      // If vehicle is at end of lane with no successors (dead end), keep it stopped
+      // If vehicle is at end of lane with no successors (dead end), despawn it
       if (vehicle.lanePosition >= lane.length - 0.1 && lane.successors.length === 0) {
-        vehicle.velocity = 0;
-        vehicle.acceleration = 0;
+        toRemove.push(vehicle.id);
         continue;
       }
 
@@ -247,6 +247,10 @@ export class TrafficSimulationEngine implements SimulationEngine {
       };
       
       vehicle.acceleration = model.calculateAcceleration(context);
+    }
+
+    for (const id of toRemove) {
+      this.removeVehicle(id);
     }
   }
   
@@ -542,24 +546,8 @@ export class TrafficSimulationEngine implements SimulationEngine {
     }
 
     if (position > lane.length && lane.successors.length === 0) {
-      // Dead end - start fade-out animation
-      if (!vehicle.isAtDeadEnd) {
-        console.log(`🚗 Vehicle ${vehicle.id} reached dead end at node (no outgoing edges), fading out`);
-        vehicle.isAtDeadEnd = true;
-        vehicle.fadeOutProgress = 0;
-      }
-      vehicle.lanePosition = lane.length;
-      vehicle.velocity = 0;
-      vehicle.acceleration = 0;
-      
-      // Increment fade-out progress
-      if (vehicle.fadeOutProgress !== undefined) {
-        vehicle.fadeOutProgress = Math.min(1, vehicle.fadeOutProgress + this.config.timeStep / 2.0); // 2 second fade
-        if (vehicle.fadeOutProgress >= 1) {
-          // Fade complete - remove vehicle
-          this.removeVehicle(vehicle.id);
-        }
-      }
+      console.log(`🚗 Vehicle ${vehicle.id} reached dead end at node (no outgoing edges), despawning`);
+      this.removeVehicle(vehicle.id);
       return;
     }
 
