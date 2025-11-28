@@ -66,6 +66,18 @@ interface HudState {
   fps: number;
 }
 
+type TrafficLightState = 'green' | 'red';
+type TrafficLight = {
+  id: string;
+  position: Vector2D;
+  heading: number;
+  laneId: string;
+  lanePosition: number;
+  state: TrafficLightState;
+  timerSeconds: number; // 0 for manual
+  nextSwitchTime: number; // simulation time when to toggle, if timer > 0
+};
+
 type BackdropContext = {
   network: RoadNetworkImpl;
   tileCache: Map<string, HTMLImageElement>;
@@ -83,7 +95,7 @@ const MAX_ZOOM_SLIDER = MAX_ZOOM;
 const LOD_HIDE_ROADS = 0.7;
 const LOD_FADE_START = 0.9;
 const LOD_FULL = 1.3;
-const HEATMAP_CELL_SIZE = 80; // world units
+const HEATMAP_CELL_SIZE = 40; // world units
 const CHUNK_WORLD_SIZE = 800; // meters in projected space for dynamic loading
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 
@@ -912,7 +924,8 @@ function drawScene(
   network?: RoadNetworkImpl,
   selection?: Selection,
   highlightSpawnNodes: boolean = false,
-  showRoadEdges: boolean = true
+  showRoadEdges: boolean = true,
+  trafficLights: TrafficLight[] = []
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -995,6 +1008,22 @@ function drawScene(
       ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
       ctx.fill();
     }
+  }
+
+  // Traffic lights
+  for (const tl of trafficLights) {
+    const screen = worldToScreen(view, tl.position);
+    ctx.save();
+    ctx.translate(screen.x, screen.y);
+    ctx.rotate(tl.heading);
+    ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.rect(-6, -10, 12, 20);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
   }
 
   if (selection && network) {
@@ -1189,6 +1218,49 @@ function mergeNetworkFromJSON(target: RoadNetworkImpl, fragmentJSON: NetworkJSON
   target.rebuildLaneConnectivity();
 }
 
+function updateTrafficLightTimers(
+  lights: TrafficLight[],
+  currentTime: number,
+  setLights: (next: TrafficLight[]) => void,
+  lightsRef: React.MutableRefObject<TrafficLight[]>
+) {
+  let changed = false;
+  const nextLights = lights.map(tl => {
+    if (tl.timerSeconds > 0 && currentTime >= tl.nextSwitchTime) {
+      changed = true;
+      const newState: TrafficLightState = tl.state === 'green' ? 'red' : 'green';
+      return {
+        ...tl,
+        state: newState,
+        nextSwitchTime: currentTime + tl.timerSeconds,
+      };
+    }
+    return tl;
+  });
+  if (changed) {
+    lightsRef.current = nextLights;
+    setLights(nextLights);
+  }
+}
+
+function enforceTrafficLights(engine: TrafficSimulationEngine, lights: TrafficLight[]) {
+  for (const vehicle of engine.vehicles.values()) {
+    if (!vehicle.laneId) continue;
+    const redAhead = lights.find(
+      tl =>
+        tl.state === 'red' &&
+        tl.laneId === vehicle.laneId &&
+        tl.lanePosition > vehicle.lanePosition &&
+        tl.lanePosition - vehicle.lanePosition < 20
+    );
+    if (redAhead) {
+      vehicle.velocity = 0;
+      vehicle.acceleration = 0;
+      vehicle.lanePosition = Math.min(vehicle.lanePosition, redAhead.lanePosition - 3);
+    }
+  }
+}
+
 async function fetchChunkAndMerge(
   chunkKey: string,
   cx: number,
@@ -1293,6 +1365,10 @@ export default function TrafficSimulationApp() {
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
   const [obstacleRemovalMode, setObstacleRemovalMode] = useState(false);
+  const [trafficLightPlacementMode, setTrafficLightPlacementMode] = useState(false);
+  const [trafficLightTimer, setTrafficLightTimer] = useState(0);
+  const [trafficLights, setTrafficLights] = useState<TrafficLight[]>([]);
+  const trafficLightsRef = useRef<TrafficLight[]>([]);
   const [selection, setSelection] = useState<Selection | undefined>(undefined);
   const [streetQuery, setStreetQuery] = useState('');
   const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
@@ -1314,7 +1390,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
     }
   }, [spawnPointPlacementMode, showRoadEdges]);
@@ -1433,6 +1510,10 @@ export default function TrafficSimulationApp() {
   requestRedrawRef.current.fn = requestRedraw;
 
   useEffect(() => {
+    trafficLightsRef.current = trafficLights;
+  }, [trafficLights]);
+
+  useEffect(() => {
     requestRedraw();
   }, [showBackdrop, requestRedraw]);
 
@@ -1464,7 +1545,8 @@ export default function TrafficSimulationApp() {
           runtime.network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
@@ -1480,8 +1562,11 @@ export default function TrafficSimulationApp() {
     setSpawnPointPlacementMode(false);
     setObstaclePlacementMode(false);
     setObstacleRemovalMode(false);
+    setTrafficLightPlacementMode(false);
     setSpawnPoints([]);
     spawnPointsRef.current = [];
+    setTrafficLights([]);
+    trafficLightsRef.current = [];
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
 
@@ -1530,7 +1615,8 @@ export default function TrafficSimulationApp() {
       network,
       selectionRef.current,
       spawnPointPlacementMode,
-      showRoadEdges
+      showRoadEdges,
+      trafficLightsRef.current
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -1553,7 +1639,8 @@ export default function TrafficSimulationApp() {
           network,
           selectionRef.current,
           spawnPointPlacementMode,
-          showRoadEdges
+          showRoadEdges,
+          trafficLightsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
@@ -1653,7 +1740,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateDynamicChunks(view);
     }
@@ -1725,6 +1813,13 @@ export default function TrafficSimulationApp() {
       const delta = Math.min((timestamp - lastFrameRef.current) / 1000, 0.25);
       lastFrameRef.current = timestamp;
       runtime.engine.step(delta * timeScale);
+      updateTrafficLightTimers(
+        trafficLightsRef.current,
+        runtime.engine.currentTime,
+        setTrafficLights,
+        trafficLightsRef
+      );
+      enforceTrafficLights(runtime.engine, trafficLightsRef.current);
       drawScene(
         canvas,
         runtime.engine,
@@ -1734,7 +1829,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
 
       hudAccumulatorRef.current += delta;
@@ -1830,7 +1926,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -1847,7 +1944,13 @@ export default function TrafficSimulationApp() {
     canvas.style.cursor = 'grab';
 
     const beginPan = (event: PointerEvent) => {
-      if (spawnPointPlacementMode || obstaclePlacementMode || obstacleRemovalMode) return;
+      if (
+        spawnPointPlacementMode ||
+        obstaclePlacementMode ||
+        obstacleRemovalMode ||
+        trafficLightPlacementMode
+      )
+        return;
       if (event.button !== 0 && event.button !== 1) return;
       const view = viewRef.current;
       if (!view) return;
@@ -1884,7 +1987,8 @@ export default function TrafficSimulationApp() {
         runtime.network,
         selectionRef.current,
         spawnPointPlacementMode,
-        showRoadEdges
+        showRoadEdges,
+        trafficLightsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -1927,11 +2031,42 @@ export default function TrafficSimulationApp() {
         setSpawnPointPlacementMode(false);
         setObstaclePlacementMode(false);
         setObstacleRemovalMode(false);
+        setTrafficLightPlacementMode(false);
         return;
       }
       const rect = canvas.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
+
+      if (trafficLightPlacementMode) {
+        const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
+        setSpawnPointPlacementMode(false);
+        if (!laneHit) {
+          setTrafficLightPlacementMode(false);
+          console.warn('No lane found near click for traffic light');
+          return;
+        }
+        const proj = projectAlongLane(laneHit.lane, laneHit.s);
+        const tl: TrafficLight = {
+          id: `tl_${Date.now()}`,
+          position: proj.position,
+          heading: proj.heading,
+          laneId: laneHit.lane.id,
+          lanePosition: laneHit.s,
+          state: 'green',
+          timerSeconds: trafficLightTimer,
+          nextSwitchTime:
+            trafficLightTimer > 0 && runtime.engine ? runtime.engine.currentTime + trafficLightTimer : Infinity,
+        };
+        setTrafficLights(prev => {
+          const next = [...prev, tl];
+          trafficLightsRef.current = next;
+          return next;
+        });
+        setTrafficLightPlacementMode(false);
+        requestRedrawRef.current.fn();
+        return;
+      }
 
       if (obstaclePlacementMode || obstacleRemovalMode) {
         const laneHit = findClosestLaneAndPosition(view, runtime.network, { x, y });
@@ -1960,6 +2095,41 @@ export default function TrafficSimulationApp() {
           }
           return;
         }
+      }
+
+      // Toggle traffic light if clicked
+      const clickedLight = (() => {
+        const viewLocal = viewRef.current;
+        if (!viewLocal) return undefined;
+        let nearest: TrafficLight | undefined;
+        let bestDist = Infinity;
+        for (const tl of trafficLightsRef.current) {
+          const screen = worldToScreen(viewLocal, tl.position);
+          const dx = screen.x - x;
+          const dy = screen.y - y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < bestDist && d2 < 12 * 12) {
+            bestDist = d2;
+            nearest = tl;
+          }
+        }
+        return nearest;
+      })();
+
+      if (clickedLight && runtime) {
+        setTrafficLights(prev =>
+          prev.map(tl =>
+            tl.id === clickedLight.id
+              ? {
+                  ...tl,
+                  state: tl.state === 'green' ? 'red' : 'green',
+                  nextSwitchTime:
+                    tl.timerSeconds > 0 ? runtime.engine.currentTime + tl.timerSeconds : Infinity,
+                }
+              : tl
+          )
+        );
+        return;
       }
 
       if (spawnPointPlacementMode) {
@@ -2211,13 +2381,13 @@ export default function TrafficSimulationApp() {
               onClick={handleAddVehicle}
               className="flex items-center justify-center gap-2 rounded bg-cyan-600 hover:bg-cyan-500 px-3 py-2 col-span-2"
             >
-              <Plus size={16} /> Inject vehicle
+              <Plus size={16} /> Add vehicle
             </button>
             <button
               onClick={() => handleAddVehiclesBulk(bulkCount)}
               className="flex items-center justify-center gap-2 rounded bg-cyan-700 hover:bg-cyan-600 px-3 py-2 col-span-2"
             >
-              <Plus size={16} /> Inject {bulkCount} vehicles
+              <Plus size={16} /> Add {bulkCount} vehicles
             </button>
             <div className="col-span-2 text-xs text-slate-300 flex items-center gap-2">
               <label className="text-slate-400">Bulk count</label>
@@ -2267,6 +2437,34 @@ export default function TrafficSimulationApp() {
               }`}
             >
               <Minus size={16} /> Remove obstacle
+            </button>
+            <div className="col-span-2 text-xs text-slate-300 flex items-center gap-2">
+              <label className="text-slate-400">Traffic light timer (s, 0=manual)</label>
+              <input
+                type="number"
+                min={0}
+                max={300}
+                value={trafficLightTimer}
+                onChange={e =>
+                  setTrafficLightTimer(Math.max(0, Math.min(300, Number(e.target.value) || 0)))
+                }
+                className="w-20 rounded bg-slate-800 border border-slate-700 px-2 py-1 text-right"
+              />
+            </div>
+            <button
+              onClick={() => {
+                setSpawnPointPlacementMode(false);
+                setObstaclePlacementMode(false);
+                setObstacleRemovalMode(false);
+                setTrafficLightPlacementMode(true);
+              }}
+              className={`flex items-center justify-center gap-2 rounded px-3 py-2 col-span-2 ${
+                trafficLightPlacementMode
+                  ? 'bg-lime-400 text-slate-900'
+                  : 'bg-lime-700 hover:bg-lime-600'
+              }`}
+            >
+              <Plus size={16} /> Place traffic light
             </button>
           </div>
 
