@@ -320,12 +320,11 @@ export class TrafficSimulationEngine implements SimulationEngine {
     const laneChangeDuration = 3.0; // seconds
     const progressIncrement = this.config.timeStep / laneChangeDuration;
     
-    vehicle.laneChangeProgress += progressIncrement;
-    
     const currentLane = this.network.getLane(vehicle.laneId);
     const targetLane = this.network.getLane(vehicle.targetLaneId);
     
     if (currentLane && targetLane) {
+      const nextProgress = Math.min(1, vehicle.laneChangeProgress + progressIncrement);
       const lateralDistance = (targetLane.index - currentLane.index) * currentLane.width;
       const k = 12; // controls steepness of sigmoid
       const logistic = (x: number) => 1 / (1 + Math.exp(-k * (x - 0.5)));
@@ -333,9 +332,33 @@ export class TrafficSimulationEngine implements SimulationEngine {
       const end = logistic(1);
       const eased = Math.min(
         1,
-        Math.max(0, (logistic(vehicle.laneChangeProgress) - start) / (end - start))
+        Math.max(0, (logistic(nextProgress) - start) / (end - start))
       );
       vehicle.laneOffset = lateralDistance * eased;
+
+      const leader = this.findLeaderDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
+      const follower = this.findFollowerDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
+      const currentEdge = this.network.getEdge(currentLane.edgeId);
+      const targetEdge = this.network.getEdge(targetLane.edgeId);
+      const streetKey = (edge: any) =>
+        edge?.name ?? edge?.metadata?.name ?? edge?.metadata?.ref ?? edge?.id;
+      const crossingDifferentStreet = streetKey(currentEdge) !== streetKey(targetEdge);
+      const priorityRoad =
+        (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
+      const minMergeGap = crossingDifferentStreet ? (priorityRoad ? 8 : 5) : 2.5;
+
+      const proposedPos = vehicle.lanePosition;
+      const safeAhead = !leader || leader.lanePosition - proposedPos >= minMergeGap;
+      const safeBehind = !follower || proposedPos - follower.lanePosition >= minMergeGap;
+      if (crossingDifferentStreet && (!safeAhead || !safeBehind)) {
+        // Yield: pause merge until a gap opens on a different street
+        vehicle.laneChangeProgress = Math.min(vehicle.laneChangeProgress, 0.95);
+        vehicle.velocity = Math.min(vehicle.velocity, 0.5);
+        vehicle.acceleration = -2;
+        return;
+      }
+
+      vehicle.laneChangeProgress = nextProgress;
     }
     
     if (vehicle.laneChangeProgress >= 1.0) {
@@ -343,8 +366,17 @@ export class TrafficSimulationEngine implements SimulationEngine {
       if (targetLaneId) {
         const leader = this.findLeaderDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
         const follower = this.findFollowerDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
-        const minMergeGap = 2.0;
-
+        const tgtLane = this.network.getLane(targetLaneId);
+        const targetEdge = tgtLane ? this.network.getEdge(tgtLane.edgeId) : undefined;
+        const curEdge = this.network.getLane(oldLaneId)?.edgeId
+          ? this.network.getEdge(this.network.getLane(oldLaneId)!.edgeId)
+          : undefined;
+        const streetKey = (edge: any) =>
+          edge?.name ?? edge?.metadata?.name ?? edge?.metadata?.ref ?? edge?.id;
+        const crossingDifferentStreet = streetKey(curEdge) !== streetKey(targetEdge);
+        const priorityRoad =
+          (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= (curEdge?.laneCount ?? 0)) ?? false;
+        const minMergeGap = crossingDifferentStreet ? (priorityRoad ? 8 : 5) : 2.5;
         let newPos = vehicle.lanePosition;
         if (leader) {
           newPos = Math.min(newPos, leader.lanePosition - minMergeGap);
@@ -353,20 +385,27 @@ export class TrafficSimulationEngine implements SimulationEngine {
           newPos = Math.max(newPos, follower.lanePosition + minMergeGap);
         }
 
-        // If there is no room, abandon this lane change and keep the current lane.
+        // If there is no room, hold and keep yielding instead of aborting for different streets.
         if (
           (leader && follower && leader.lanePosition - follower.lanePosition < minMergeGap * 2) ||
           newPos < 0 ||
           (leader && newPos > leader.lanePosition - minMergeGap) ||
           (follower && newPos < follower.lanePosition + minMergeGap)
         ) {
-          console.log(`❌ Vehicle ${vehicle.id} aborted lane change: ${oldLaneId} → ${targetLaneId} (not enough space)`);
-          vehicle.isChangingLane = false;
-          vehicle.targetLaneId = undefined;
-          vehicle.laneChangeProgress = undefined;
-          vehicle.laneOffset = 0;
-          this.laneChangeCooldown.set(vehicle.id, this.currentTime);
-          return;
+          if (crossingDifferentStreet) {
+            vehicle.laneChangeProgress = 0.95;
+            vehicle.velocity = Math.min(vehicle.velocity, 0.5);
+            vehicle.acceleration = -2;
+            return;
+          } else {
+            // Same street: cancel this attempt to avoid blocking.
+            vehicle.isChangingLane = false;
+            vehicle.targetLaneId = undefined;
+            vehicle.laneChangeProgress = undefined;
+            vehicle.laneOffset = 0;
+            this.laneChangeCooldown.set(vehicle.id, this.currentTime);
+            return;
+          }
         }
 
         vehicle.laneId = targetLaneId;
@@ -587,13 +626,22 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private interpolateLanePosition(lane: Lane, t: number): Vector2D {
     // Linear interpolation along centerline polyline
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length === 0) {
+      return { x: 0, y: 0 };
+    }
+    if (points.length === 1) {
+      return points[0];
+    }
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
-    const localT = (t * n) - segment;
+    const localT = Math.min(1, Math.max(0, t * n - segment));
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) {
+      return points[0] ?? { x: 0, y: 0 };
+    }
     
     return {
       x: p0.x + (p1.x - p0.x) * localT,
@@ -603,16 +651,23 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private getLaneNormal(lane: Lane, t: number): Vector2D {
     // Get tangent direction
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length < 2) {
+      return { x: 0, y: 0 };
+    }
+
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) {
+      return { x: 0, y: 0 };
+    }
     
     const dx = p1.x - p0.x;
     const dy = p1.y - p0.y;
-    const len = Math.sqrt(dx * dx + dy * dy);
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
     
     // Normal is perpendicular to tangent
     return {
@@ -622,12 +677,15 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   private getLaneHeading(lane: Lane, t: number): number {
-    const points = lane.centerline;
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length < 2) return 0;
+
     const n = points.length - 1;
     const segment = Math.min(Math.floor(t * n), n - 1);
     
     const p0 = points[segment];
-    const p1 = points[segment + 1];
+    const p1 = points[Math.min(segment + 1, n)];
+    if (!p0 || !p1) return 0;
     
     return Math.atan2(p1.y - p0.y, p1.x - p0.x);
   }
