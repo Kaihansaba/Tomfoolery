@@ -338,16 +338,20 @@ export class TrafficSimulationEngine implements SimulationEngine {
 
       const leader = this.findLeaderDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
       const follower = this.findFollowerDirect(targetLane.id, vehicle.lanePosition, vehicle.id);
+      const currentEdge = this.network.getEdge(currentLane.edgeId);
       const targetEdge = this.network.getEdge(targetLane.edgeId);
+      const streetKey = (edge: any) =>
+        edge?.name ?? edge?.metadata?.name ?? edge?.metadata?.ref ?? edge?.id;
+      const crossingDifferentStreet = streetKey(currentEdge) !== streetKey(targetEdge);
       const priorityRoad =
         (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
-      const minMergeGap = priorityRoad ? 8 : 5;
+      const minMergeGap = crossingDifferentStreet ? (priorityRoad ? 8 : 5) : 2.5;
 
       const proposedPos = vehicle.lanePosition;
       const safeAhead = !leader || leader.lanePosition - proposedPos >= minMergeGap;
       const safeBehind = !follower || proposedPos - follower.lanePosition >= minMergeGap;
-      if (!safeAhead || !safeBehind) {
-        // Yield: pause merge until a gap opens
+      if (crossingDifferentStreet && (!safeAhead || !safeBehind)) {
+        // Yield: pause merge until a gap opens on a different street
         vehicle.laneChangeProgress = Math.min(vehicle.laneChangeProgress, 0.95);
         vehicle.velocity = Math.min(vehicle.velocity, 0.5);
         vehicle.acceleration = -2;
@@ -362,11 +366,17 @@ export class TrafficSimulationEngine implements SimulationEngine {
       if (targetLaneId) {
         const leader = this.findLeaderDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
         const follower = this.findFollowerDirect(targetLaneId, vehicle.lanePosition, vehicle.id);
-        const targetEdge = this.network.getEdge(this.network.getLane(targetLaneId)?.edgeId || '');
+        const tgtLane = this.network.getLane(targetLaneId);
+        const targetEdge = tgtLane ? this.network.getEdge(tgtLane.edgeId) : undefined;
+        const curEdge = this.network.getLane(oldLaneId)?.edgeId
+          ? this.network.getEdge(this.network.getLane(oldLaneId)!.edgeId)
+          : undefined;
+        const streetKey = (edge: any) =>
+          edge?.name ?? edge?.metadata?.name ?? edge?.metadata?.ref ?? edge?.id;
+        const crossingDifferentStreet = streetKey(curEdge) !== streetKey(targetEdge);
         const priorityRoad =
-          (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
-        const minMergeGap = priorityRoad ? 8 : 5;
-
+          (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= (curEdge?.laneCount ?? 0)) ?? false;
+        const minMergeGap = crossingDifferentStreet ? (priorityRoad ? 8 : 5) : 2.5;
         let newPos = vehicle.lanePosition;
         if (leader) {
           newPos = Math.min(newPos, leader.lanePosition - minMergeGap);
@@ -375,17 +385,27 @@ export class TrafficSimulationEngine implements SimulationEngine {
           newPos = Math.max(newPos, follower.lanePosition + minMergeGap);
         }
 
-        // If there is no room, hold and keep yielding instead of aborting.
+        // If there is no room, hold and keep yielding instead of aborting for different streets.
         if (
           (leader && follower && leader.lanePosition - follower.lanePosition < minMergeGap * 2) ||
           newPos < 0 ||
           (leader && newPos > leader.lanePosition - minMergeGap) ||
           (follower && newPos < follower.lanePosition + minMergeGap)
         ) {
-          vehicle.laneChangeProgress = 0.95;
-          vehicle.velocity = Math.min(vehicle.velocity, 0.5);
-          vehicle.acceleration = -2;
-          return;
+          if (crossingDifferentStreet) {
+            vehicle.laneChangeProgress = 0.95;
+            vehicle.velocity = Math.min(vehicle.velocity, 0.5);
+            vehicle.acceleration = -2;
+            return;
+          } else {
+            // Same street: cancel this attempt to avoid blocking.
+            vehicle.isChangingLane = false;
+            vehicle.targetLaneId = undefined;
+            vehicle.laneChangeProgress = undefined;
+            vehicle.laneOffset = 0;
+            this.laneChangeCooldown.set(vehicle.id, this.currentTime);
+            return;
+          }
         }
 
         vehicle.laneId = targetLaneId;
