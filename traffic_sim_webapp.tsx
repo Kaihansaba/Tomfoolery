@@ -1138,7 +1138,8 @@ export default function TrafficSimulationApp() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
   const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('mouse');
-  const requestRedrawRef = useRef<(() => void) & { _pending?: boolean; _rafId?: number }>(() => {});
+  const requestRedrawRef = useRef<{ fn: () => void }>({ fn: () => {} });
+  const redrawRafIdRef = useRef<number | undefined>(undefined);
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
   const [isRunning, setIsRunning] = useState(true);
@@ -1249,7 +1250,7 @@ export default function TrafficSimulationApp() {
             runtime,
             chunkCacheRef.current,
             pendingChunkFetchRef.current,
-            requestRedrawRef.current
+            requestRedrawRef.current.fn
           );
         }
         // Placeholder for future fetch/merge of road data for this chunk.
@@ -1261,12 +1262,12 @@ export default function TrafficSimulationApp() {
   const requestRedraw = useCallback(() => {
     // Use requestAnimationFrame to break potential infinite loops
     // Cancel any pending redraw to avoid stacking
-    if (requestRedrawRef.current._rafId !== undefined) {
-      cancelAnimationFrame(requestRedrawRef.current._rafId);
+    if (redrawRafIdRef.current !== undefined) {
+      cancelAnimationFrame(redrawRafIdRef.current);
     }
     
-    requestRedrawRef.current._rafId = requestAnimationFrame(() => {
-      requestRedrawRef.current._rafId = undefined;
+    redrawRafIdRef.current = requestAnimationFrame(() => {
+      redrawRafIdRef.current = undefined;
       const runtime = runtimeRef.current;
       const canvas = canvasRef.current;
       const view = viewRef.current;
@@ -1290,7 +1291,7 @@ export default function TrafficSimulationApp() {
   }, [spawnPointPlacementMode, showRoadEdges, updateStreetSuggestions, updateDynamicChunks]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
-  requestRedrawRef.current = requestRedraw;
+  requestRedrawRef.current.fn = requestRedraw;
 
   useEffect(() => {
     requestRedraw();
