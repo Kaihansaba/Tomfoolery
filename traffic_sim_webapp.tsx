@@ -1614,6 +1614,20 @@ function overpassToNetworkJSON(
     const tags = (way as OSMWay).tags || {};
     if (!tags.highway) continue;
 
+    const ignoredHighway = new Set([
+      'footway',
+      'path',
+      'pedestrian',
+      'steps',
+      'bridleway',
+      'cycleway',
+      'sidewalk',
+      'service',
+      'platform',
+    
+    ]);
+    if (ignoredHighway.has(tags.highway)) continue;
+
     way.nodes.forEach(id => {
       nodeUseCount[id] = (nodeUseCount[id] || 0) + 1;
     });
