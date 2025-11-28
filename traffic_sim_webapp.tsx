@@ -31,6 +31,7 @@ import {
   Vector2D,
   BackdropConfig,
   GeoReference,
+  Hotspot,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
 import testperchance from './testperchance.json';
@@ -158,10 +159,68 @@ const UNDISCOVERED_VIEWPORT_THRESHOLD = 0.2; // 20% of visible area
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const DEBUG_FETCH_LOGS = true;
 const VIEW_EPS = 1e-6;
+const HOTSPOT_INFLUENCE = 0.6; // probability to assign a hotspot destination on spawn
+const HOTSPOT_REACHED_RADIUS = 30; // meters
+const HOTSPOT_TAGS = {
+  amenity: /^(parking|school|university|college|hospital|clinic|marketplace)$/i,
+  shop: /^(supermarket|mall|department_store)$/i, // narrow shop types
+  leisure: /^(stadium|sports_centre)$/i,
+  office: /^.+$/i,
+  public_transport: /^(station|stop_position)$/i,
+};
+
+function hotspotWeightFromTags(tags: Record<string, string>): number {
+  const amenity = tags['amenity'];
+  const shop = tags['shop'];
+  const leisure = tags['leisure'];
+  const office = tags['office'];
+  const pt = tags['public_transport'];
+
+  if (amenity === 'hospital' || amenity === 'clinic') return 5;
+  if (amenity === 'university' || amenity === 'school' || amenity === 'college') return 4;
+  if (amenity === 'parking' || amenity === 'marketplace') return 3;
+  if (leisure === 'stadium' || leisure === 'sports_centre') return 4;
+  if (pt === 'station') return 4;
+  if (shop && HOTSPOT_TAGS.shop.test(shop)) return 3;
+  if (office) return 0; // ignore generic offices
+  return 0;
+}
+
+function isHotspotCandidate(tags: Record<string, string> = {}): boolean {
+  return (
+    (tags['amenity'] && HOTSPOT_TAGS.amenity.test(tags['amenity'])) ||
+    (tags['shop'] && HOTSPOT_TAGS.shop.test(tags['shop'])) ||
+    (tags['leisure'] && HOTSPOT_TAGS.leisure.test(tags['leisure'])) ||
+    (tags['office'] && HOTSPOT_TAGS.office.test(tags['office'])) ||
+    (tags['public_transport'] && HOTSPOT_TAGS.public_transport.test(tags['public_transport']))
+  );
+}
+
+function sampleHotspot(hotspots: Hotspot[]): Hotspot | null {
+  if (!hotspots || hotspots.length === 0) return null;
+  let total = 0;
+  for (const h of hotspots) total += h.weight > 0 ? h.weight : 0;
+  if (total <= 0) return null;
+  let r = Math.random() * total;
+  for (const h of hotspots) {
+    const w = h.weight > 0 ? h.weight : 0;
+    r -= w;
+    if (r <= 0) return h;
+  }
+  return hotspots[hotspots.length - 1];
+}
+
 function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
   // Mirror the standalone overpass.ts format for consistent JSON structure
   return `[out:json][timeout:25];
-way["highway"](${south},${west},${north},${east});
+(
+  way["highway"](${south},${west},${north},${east});
+  node["amenity"~"parking|school|university|college|hospital|clinic|marketplace"](${south},${west},${north},${east});
+  node["shop"](${south},${west},${north},${east});
+  node["leisure"~"stadium|sports_centre"](${south},${west},${north},${east});
+  node["office"](${south},${west},${north},${east});
+  node["public_transport"~"station|stop_position"](${south},${west},${north},${east});
+);
 (._;>;);
 out;`;
 }
@@ -662,6 +721,21 @@ function generateUniqueObstacleId(): string {
   return `obs_${obstacleCounter++}`;
 }
 
+function findNearestNodeIdToWorldPoint(network: RoadNetworkImpl, x: number, y: number): string | null {
+  let best: string | null = null;
+  let bestDistSq = Infinity;
+  for (const node of network.nodes.values()) {
+    const dx = node.position.x - x;
+    const dy = node.position.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      best = node.id;
+    }
+  }
+  return best;
+}
+
 function createVehicleState(lane: Lane, position: number, category?: VehicleCategory): VehicleState {
   const type = category ?? pickCategory();
   const params = DEFAULT_VEHICLE_TYPES[type];
@@ -690,6 +764,8 @@ function createVehicleState(lane: Lane, position: number, category?: VehicleCate
     leaderId: undefined,
     followerIds: [],
     color: params.color,
+    targetHotspotId: null,
+    targetNodeId: null,
   };
 }
 
@@ -715,6 +791,25 @@ function createObstacleVehicle(lane: Lane, position: number): VehicleState {
     followerIds: [],
     color: '#f97316',
   };
+}
+
+function maybeAssignHotspotDestination(
+  vehicle: VehicleState,
+  network: RoadNetworkImpl,
+  hotspots: Hotspot[]
+): void {
+  if (HOTSPOT_INFLUENCE <= 0) return;
+  if (!hotspots || hotspots.length === 0) return;
+  if (Math.random() > HOTSPOT_INFLUENCE) return;
+
+  const hs = sampleHotspot(hotspots);
+  if (!hs) return;
+
+  vehicle.targetHotspotId = hs.id;
+  vehicle.targetX = hs.x;
+  vehicle.targetY = hs.y;
+  const nodeId = findNearestNodeIdToWorldPoint(network, hs.x, hs.y);
+  vehicle.targetNodeId = nodeId ?? null;
 }
 
 function addObstacleToLane(engine: TrafficSimulationEngine, lane: Lane, position: number): void {
@@ -747,7 +842,7 @@ function removeObstacleAt(
   return false;
 }
 
-function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey): void {
+function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey, hotspots: Hotspot[] = []): void {
   const drivingLanes = Array.from(engine.network.lanes.values()).filter(
     lane => lane.laneType === 'driving'
   );
@@ -766,6 +861,7 @@ function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey): v
       const pos = 5 + i * spacing + Math.random() * Math.min(spacing * 0.35, 10);
       if (pos >= lane.length - 5) continue;
       const vehicle = createVehicleState(lane, pos);
+      maybeAssignHotspotDestination(vehicle, engine.network as RoadNetworkImpl, hotspots);
       engine.addVehicle(vehicle);
     }
   }
@@ -1204,7 +1300,8 @@ function drawScene(
   toolMode: 'none' | 'addEdge' | 'subnetwork' | 'delete' = 'none',
   subnetworkSelection: Set<string> = new Set(),
   pendingAddNodeId?: string,
-  roadLayer?: HTMLCanvasElement | null
+  roadLayer?: HTMLCanvasElement | null,
+  hotspots: Hotspot[] = []
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -1309,6 +1406,23 @@ function drawScene(
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  // Hotspots overlay (debug)
+  if (hotspots.length > 0) {
+    ctx.save();
+    for (const h of hotspots) {
+      const screen = worldToScreen(view, { x: h.x, y: h.y });
+      ctx.beginPath();
+      const r = Math.min(8, 3 + h.weight);
+      ctx.fillStyle = 'rgba(255,165,0,0.8)';
+      ctx.strokeStyle = 'rgba(255,140,0,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.arc(screen.x, screen.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Subnetwork selection highlights
@@ -1725,7 +1839,9 @@ async function fetchChunkAndMerge(
   pendingChunks: Set<string>,
   onRedraw: () => void,
   markRoadsDirty?: () => void,
-  addTrafficLights?: (lights: TrafficLight[]) => void
+  addTrafficLights?: (lights: TrafficLight[]) => void,
+  hotspots?: Hotspot[],
+  hotspotIds?: Set<string>
 ) {
   const geoRef = runtime.network.geoReference;
   if (!geoRef) return;
@@ -1759,6 +1875,49 @@ async function fetchChunkAndMerge(
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
+    if (hotspots && hotspotIds) {
+      for (const el of data.elements) {
+        if (el.type !== 'node') continue;
+        const node = el as OSMNode;
+        const tags = node.tags || {};
+        if (!isHotspotCandidate(tags)) continue;
+        const id = String(node.id);
+        if (hotspotIds.has(id)) continue;
+        const world = geoToWorld(node.lat, node.lon, geoRef);
+        const hs: Hotspot = {
+          id,
+          lat: node.lat,
+          lon: node.lon,
+          x: world.x,
+          y: world.y,
+          weight: hotspotWeightFromTags(tags),
+          tags,
+        };
+        hotspotIds.add(id);
+        hotspots.push(hs);
+      }
+      // Deduplicate densely clustered hotspots (e.g., shop lots) within 120m, keep highest weight
+      const filtered: Hotspot[] = [];
+      for (const h of hotspots) {
+        let merged = false;
+        for (let i = 0; i < filtered.length; i++) {
+          const f = filtered[i];
+          const dx = h.x - f.x;
+          const dy = h.y - f.y;
+          if (dx * dx + dy * dy < 120 * 120) {
+            if (h.weight > f.weight) {
+              filtered[i] = h;
+            }
+            merged = true;
+            break;
+          }
+        }
+        if (!merged && h.weight > 0) {
+          filtered.push(h);
+        }
+      }
+      hotspots.splice(0, hotspots.length, ...filtered);
+    }
     if (addTrafficLights) {
       const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
       if (extracted.length > 0) addTrafficLights(extracted);
@@ -1803,6 +1962,8 @@ export default function TrafficSimulationApp() {
   const chunkCacheRef = useRef<Set<string>>(new Set());
   const pendingChunkFetchRef = useRef<Set<string>>(new Set());
   const lastChunkFetchRef = useRef<number>(0);
+  const hotspotsRef = useRef<Hotspot[]>([]);
+  const hotspotIdsRef = useRef<Set<string>>(new Set());
   const roadsLayerRef = useRef<HTMLCanvasElement | null>(null);
   const roadsDirtyRef = useRef<boolean>(true);
   const lastRoadViewRef = useRef<ViewTransform | null>(null);
@@ -1887,7 +2048,8 @@ export default function TrafficSimulationApp() {
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
     }
   }, [spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
@@ -2059,7 +2221,9 @@ export default function TrafficSimulationApp() {
             trafficLightsRef.current = merged;
             return merged;
           });
-        }
+        },
+        hotspotsRef.current,
+        hotspotIdsRef.current
       );
     },
     [scenario, showBackdrop]
@@ -2147,7 +2311,8 @@ export default function TrafficSimulationApp() {
           toolMode,
           subnetworkSelection,
           addToolState.pendingNodeId,
-          roadLayer
+          roadLayer,
+          hotspotsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(view);
@@ -2221,7 +2386,9 @@ export default function TrafficSimulationApp() {
           simulationMode,
           toolMode,
           subnetworkSelection,
-          addToolState.pendingNodeId
+          addToolState.pendingNodeId,
+          renderRoadLayer(viewRef.current),
+          hotspotsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
@@ -2243,6 +2410,8 @@ export default function TrafficSimulationApp() {
     spawnPointsRef.current = [];
     setTrafficLights([]);
     trafficLightsRef.current = [];
+    hotspotsRef.current = [];
+    hotspotIdsRef.current.clear();
     vehicleTargetRef.current = vehicleTarget;
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
@@ -2336,7 +2505,8 @@ export default function TrafficSimulationApp() {
       toolMode,
       subnetworkSelection,
       addToolState.pendingNodeId,
-      renderRoadLayer(viewRef.current)
+      renderRoadLayer(viewRef.current),
+      hotspotsRef.current
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -2351,7 +2521,7 @@ export default function TrafficSimulationApp() {
 
     if (shouldSeedVehicles && sourceNetwork.lanes.size > 0) {
       setTimeout(() => {
-        seedVehicles(engine, scenario);
+        seedVehicles(engine, scenario, hotspotsRef.current);
         drawScene(
           canvas,
           engine,
@@ -2363,12 +2533,13 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges,
           trafficLightsRef.current,
-          simulationMode,
-          toolMode,
-          subnetworkSelection,
-          addToolState.pendingNodeId,
-          renderRoadLayer(viewRef.current as ViewTransform)
-        );
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId,
+        renderRoadLayer(viewRef.current as ViewTransform),
+        hotspotsRef.current
+      );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
         setHud(h => ({ ...h, vehicles: engine.vehicles.size }));
@@ -2477,7 +2648,8 @@ export default function TrafficSimulationApp() {
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
       updateDynamicChunks(view);
     }
@@ -2527,7 +2699,8 @@ export default function TrafficSimulationApp() {
           toolMode,
           subnetworkSelection,
           addToolState.pendingNodeId,
-          roadLayer
+          roadLayer,
+          hotspotsRef.current
         );
         setZoomLevel(viewRef.current.scale);
         updateDynamicChunks(viewRef.current);
@@ -2583,7 +2756,8 @@ export default function TrafficSimulationApp() {
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
 
       hudAccumulatorRef.current += delta;
@@ -2702,7 +2876,8 @@ export default function TrafficSimulationApp() {
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        renderRoadLayer(view)
+        renderRoadLayer(view),
+        hotspotsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2770,7 +2945,8 @@ export default function TrafficSimulationApp() {
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -3133,6 +3309,7 @@ export default function TrafficSimulationApp() {
       const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 6);
       if (!hasSpace) return false;
       const vehicle = createVehicleState(lane, pos);
+      maybeAssignHotspotDestination(vehicle, runtime.network, hotspotsRef.current);
       runtime.engine.addVehicle(vehicle);
       return true;
     };

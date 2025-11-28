@@ -25,6 +25,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
   currentTime: number = 0;
   vehicles: Map<VehicleID, VehicleState> = new Map();
   network: RoadNetwork;
+  private readonly HOTSPOT_REACHED_RADIUS = 30; // meters
   
   driverModels: Map<VehicleCategory, IDriverModel> = new Map();
   laneChangeModel!: ILaneChangeModel;
@@ -475,6 +476,18 @@ export class TrafficSimulationEngine implements SimulationEngine {
       // Update global position from lane coordinates
       this.updateGlobalPosition(vehicle, lane);
 
+      // Hotspot arrival check
+      const targetPos = this.getVehicleTargetPosition(vehicle);
+      if (targetPos) {
+        const dx = vehicle.position.x - targetPos.x;
+        const dy = vehicle.position.y - targetPos.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < this.HOTSPOT_REACHED_RADIUS * this.HOTSPOT_REACHED_RADIUS) {
+          toRemove.push(vehicle.id);
+          continue;
+        }
+      }
+
       // Track idle time and fade out stuck vehicles
       if (!vehicle.isAtDeadEnd) {
         const idleSpeed = 0.3;
@@ -559,6 +572,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
       }
 
       // Weighted random selection to avoid bias toward the first successor
+      const targetPos = this.getVehicleTargetPosition(vehicle);
       const weights = candidateLanes.map(next => {
         const nextEdge = this.network.getEdge(next.edgeId);
         const currentEdge = this.network.getEdge(lane.edgeId);
@@ -566,7 +580,18 @@ export class TrafficSimulationEngine implements SimulationEngine {
         const sameRoadBonus =
           nextEdge && currentEdge && nextEdge.roadType === currentEdge.roadType ? 0.5 : 0;
         const deadEndPenalty = this.leadsToDeadEnd(next.id) ? -0.5 : 0.5;
-        return Math.max(0.05, 1 + indexAffinity + sameRoadBonus + deadEndPenalty);
+        let base = Math.max(0.05, 1 + indexAffinity + sameRoadBonus + deadEndPenalty);
+        if (targetPos) {
+          const endPos = this.getLaneEndPosition(next);
+          if (endPos) {
+            const dx = endPos.x - targetPos.x;
+            const dy = endPos.y - targetPos.y;
+            const d2 = dx * dx + dy * dy;
+            const bias = 1 / (1 + Math.sqrt(d2) / 200); // closer ends get higher weight
+            base *= 1 + bias;
+          }
+        }
+        return base;
       });
 
       const total = weights.reduce((s, w) => s + w, 0);
@@ -647,6 +672,30 @@ export class TrafficSimulationEngine implements SimulationEngine {
       x: p0.x + (p1.x - p0.x) * localT,
       y: p0.y + (p1.y - p0.y) * localT,
     };
+  }
+
+  private getLaneEndPosition(lane: Lane): Vector2D | null {
+    const points = Array.isArray(lane.centerline) ? lane.centerline : [];
+    if (points.length > 0) {
+      return points[points.length - 1];
+    }
+    const edge = this.network.getEdge(lane.edgeId);
+    if (edge) {
+      const node = this.network.getNode(edge.toNode);
+      if (node) return node.position;
+    }
+    return null;
+  }
+
+  private getVehicleTargetPosition(vehicle: VehicleState): Vector2D | null {
+    if (vehicle.targetNodeId) {
+      const node = this.network.getNode(vehicle.targetNodeId);
+      if (node) return node.position;
+    }
+    if (vehicle.targetX !== undefined && vehicle.targetY !== undefined) {
+      return { x: vehicle.targetX, y: vehicle.targetY };
+    }
+    return null;
   }
   
   private getLaneNormal(lane: Lane, t: number): Vector2D {

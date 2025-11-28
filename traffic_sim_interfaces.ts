@@ -41,6 +41,16 @@ export interface BackdropConfig {
   attribution?: string;
 }
 
+export interface Hotspot {
+  id: string;
+  lat: number;
+  lon: number;
+  x: number;
+  y: number;
+  weight: number;
+  tags?: Record<string, string>;
+}
+
 // ============================================================================
 // VEHICLE TYPES AND PARAMETERS
 // ============================================================================
@@ -250,6 +260,12 @@ export interface VehicleState {
   // References
   leaderId?: VehicleID;
   followerIds?: VehicleID[];
+
+  // Hotspot destination (optional)
+  targetHotspotId?: string | null;
+  targetX?: number;
+  targetY?: number;
+  targetNodeId?: NodeID | null;
 }
 
 // ============================================================================
