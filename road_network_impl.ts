@@ -77,6 +77,53 @@ export class RoadNetworkImpl implements RoadNetwork {
       }
     }
   }
+
+  private pointDistance(a: Vector2D, b: Vector2D): number {
+    const dx = a.x - b.x;
+    const dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  private connectDanglingNodesToGeometry(): void {
+    const tolerance = 0.75; // meters
+    for (const node of this.nodes.values()) {
+      const needsOutgoing = node.outgoingEdges.length === 0;
+      const needsIncoming = node.incomingEdges.length === 0;
+      if (!needsOutgoing && !needsIncoming) continue;
+
+      for (const edge of this.edges.values()) {
+        if (!edge.geometry || edge.geometry.length === 0) continue;
+        const start = edge.geometry[0];
+        const end = edge.geometry[edge.geometry.length - 1];
+
+        if (needsOutgoing && this.pointDistance(node.position, start) <= tolerance) {
+          if (edge.fromNode !== node.id) {
+            const prev = this.nodes.get(edge.fromNode);
+            if (prev) {
+              prev.outgoingEdges = prev.outgoingEdges.filter(id => id !== edge.id);
+            }
+            edge.fromNode = node.id;
+          }
+          if (!node.outgoingEdges.includes(edge.id)) {
+            node.outgoingEdges.push(edge.id);
+          }
+        }
+
+        if (needsIncoming && this.pointDistance(node.position, end) <= tolerance) {
+          if (edge.toNode !== node.id) {
+            const prev = this.nodes.get(edge.toNode);
+            if (prev) {
+              prev.incomingEdges = prev.incomingEdges.filter(id => id !== edge.id);
+            }
+            edge.toNode = node.id;
+          }
+          if (!node.incomingEdges.includes(edge.id)) {
+            node.incomingEdges.push(edge.id);
+          }
+        }
+      }
+    }
+  }
   
   private generateLanes(edge: Edge): void {
     const laneWidth = 3.5; // meters (standard lane width)
@@ -633,6 +680,9 @@ export class RoadNetworkImpl implements RoadNetwork {
         network.intersections.set(intersection.nodeId, intersection);
       }
     }
+
+    // Connect dangling nodes that sit on top of edge geometry
+    network.connectDanglingNodesToGeometry();
 
     // Ensure lane connectivity across edge boundaries
     network.rebuildLaneConnectivity();

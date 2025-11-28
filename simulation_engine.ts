@@ -200,6 +200,13 @@ export class TrafficSimulationEngine implements SimulationEngine {
       const lane = this.network.getLane(vehicle.laneId);
       if (!lane) continue;
 
+      // If vehicle is at end of lane with no successors (dead end), keep it stopped
+      if (vehicle.lanePosition >= lane.length - 0.1 && lane.successors.length === 0) {
+        vehicle.velocity = 0;
+        vehicle.acceleration = 0;
+        continue;
+      }
+
       const leader = this.findLeaderInLane(vehicle.laneId, vehicle.lanePosition, laneVehicles, vehicle.id);
 
       if (leader) {
@@ -384,6 +391,27 @@ export class TrafficSimulationEngine implements SimulationEngine {
     }
   }
   
+  private leadsToDeadEnd(laneId: LaneID, visited: Set<LaneID> = new Set(), depth: number = 0): boolean {
+    // Prevent infinite recursion
+    if (visited.has(laneId) || depth > 10) return false;
+    visited.add(laneId);
+    
+    const lane = this.network.getLane(laneId);
+    if (!lane) return true;
+    
+    // If no successors, it's a dead end
+    if (lane.successors.length === 0) return true;
+    
+    // Check if all successors lead to dead ends
+    for (const successorId of lane.successors) {
+      if (!this.leadsToDeadEnd(successorId, new Set(visited), depth + 1)) {
+        return false; // At least one path continues
+      }
+    }
+    
+    return true; // All paths lead to dead ends
+  }
+
   private handleLaneTransition(vehicle: VehicleState, currentLane: Lane): void {
     const oldLaneId = vehicle.laneId;
     const oldLanePosition = vehicle.lanePosition;
@@ -394,7 +422,24 @@ export class TrafficSimulationEngine implements SimulationEngine {
 
     while (position > lane.length && lane.successors.length > 0) {
       position -= lane.length;
-      const nextLaneId = lane.successors[0];
+      
+      // Prefer successors that don't lead to dead ends
+      let nextLaneId: LaneID | undefined;
+      const nonDeadEndSuccessors = lane.successors.filter(succId => {
+        const succLane = this.network.getLane(succId);
+        return succLane && !this.leadsToDeadEnd(succId);
+      });
+      
+      if (nonDeadEndSuccessors.length > 0) {
+        // Prefer non-dead-end routes, but fall back to any successor if needed
+        nextLaneId = nonDeadEndSuccessors[0];
+      } else {
+        // All paths lead to dead ends, use first successor anyway
+        nextLaneId = lane.successors[0];
+      }
+      
+      if (!nextLaneId) break;
+      
       const nextLane = this.network.getLane(nextLaneId);
       if (!nextLane) {
         console.warn(`⚠️ Vehicle ${vehicle.id}: Successor lane ${nextLaneId} not found, breaking transition`);
@@ -405,9 +450,24 @@ export class TrafficSimulationEngine implements SimulationEngine {
     }
 
     if (position > lane.length && lane.successors.length === 0) {
-      console.log(`🚗 Vehicle ${vehicle.id} reached end of road and was removed`);
+      // Dead end - start fade-out animation
+      if (!vehicle.isAtDeadEnd) {
+        console.log(`🚗 Vehicle ${vehicle.id} reached dead end at node (no outgoing edges), fading out`);
+        vehicle.isAtDeadEnd = true;
+        vehicle.fadeOutProgress = 0;
+      }
       vehicle.lanePosition = lane.length;
-      this.removeVehicle(vehicle.id);
+      vehicle.velocity = 0;
+      vehicle.acceleration = 0;
+      
+      // Increment fade-out progress
+      if (vehicle.fadeOutProgress !== undefined) {
+        vehicle.fadeOutProgress = Math.min(1, vehicle.fadeOutProgress + this.config.timeStep / 2.0); // 2 second fade
+        if (vehicle.fadeOutProgress >= 1) {
+          // Fade complete - remove vehicle
+          this.removeVehicle(vehicle.id);
+        }
+      }
       return;
     }
 

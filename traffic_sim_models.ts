@@ -201,6 +201,27 @@ export class MOBILModel implements ILaneChangeModel {
     return bestDecision;
   }
   
+  private leadsToDeadEnd(laneId: string, network: RoadNetwork, visited: Set<string> = new Set(), depth: number = 0): boolean {
+    // Prevent infinite recursion
+    if (visited.has(laneId) || depth > 10) return false;
+    visited.add(laneId);
+    
+    const lane = network.getLane(laneId);
+    if (!lane) return true;
+    
+    // If no successors, it's a dead end
+    if (lane.successors.length === 0) return true;
+    
+    // Check if all successors lead to dead ends
+    for (const successorId of lane.successors) {
+      if (!this.leadsToDeadEnd(successorId, network, new Set(visited), depth + 1)) {
+        return false; // At least one path continues
+      }
+    }
+    
+    return true; // All paths lead to dead ends
+  }
+
   private evaluateSingleLaneChange(
     vehicle: VehicleState,
     currentLane: Lane,
@@ -240,7 +261,11 @@ export class MOBILModel implements ILaneChangeModel {
       this.politeness * ((aoAfter - aoBefore) + (anAfter - anBefore));
 
     const bias = targetLane.index < currentLane.index ? -this.rightBias : this.rightBias;
-    const utility = incentive + bias;
+    
+    // Penalize lanes that lead to dead ends
+    const deadEndPenalty = this.leadsToDeadEnd(targetLane.id, network) ? -5.0 : 0;
+    
+    const utility = incentive + bias + deadEndPenalty;
     const shouldChange = utility > this.threshold;
 
     return {

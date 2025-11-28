@@ -240,6 +240,10 @@ export interface VehicleState {
   targetLaneId?: LaneID;
   laneChangeProgress?: number; // [0, 1]
   
+  // Dead end fade-out
+  isAtDeadEnd?: boolean;
+  fadeOutProgress?: number; // [0, 1] for fade-out animation
+  
   // References
   leaderId?: VehicleID;
   followerIds?: VehicleID[];
