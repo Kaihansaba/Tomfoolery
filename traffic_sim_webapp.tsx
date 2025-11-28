@@ -40,6 +40,24 @@ interface Bounds {
   maxY: number;
 }
 
+type Selection =
+  | { type: 'node'; id: string }
+  | { type: 'edge'; id: string; direction: 'forward' | 'backward' };
+
+function polylineBounds(points: Vector2D[]): Bounds {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const p of points) {
+    minX = Math.min(minX, p.x);
+    minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x);
+    maxY = Math.max(maxY, p.y);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
 interface HudState {
   time: number;
   vehicles: number;
@@ -93,12 +111,16 @@ function findClosestNode(
   view: ViewTransform,
   screenX: number,
   screenY: number,
-  network: RoadNetworkImpl
+  network: RoadNetworkImpl,
+  requireOutgoingEdges: boolean = false
 ): string | undefined {
   let closestId: string | undefined;
   let minDist = Infinity;
 
   for (const node of network.nodes.values()) {
+    // Skip nodes without outgoing edges if required
+    if (requireOutgoingEdges && node.outgoingEdges.length === 0) continue;
+    
     const screenPos = worldToScreen(view, node.position);
     const dx = screenPos.x - screenX;
     const dy = screenPos.y - screenY;
@@ -110,6 +132,16 @@ function findClosestNode(
   }
 
   return closestId;
+}
+
+function getValidSpawnNodes(network: RoadNetworkImpl): string[] {
+  const validNodes: string[] = [];
+  for (const node of network.nodes.values()) {
+    if (node.outgoingEdges.length > 0) {
+      validNodes.push(node.id);
+    }
+  }
+  return validNodes;
 }
 
 function distance(a: Vector2D, b: Vector2D): number {
@@ -156,6 +188,13 @@ function worldToScreen(view: ViewTransform, point: Vector2D): Vector2D {
   };
 }
 
+function screenToWorld(view: ViewTransform, screen: Vector2D): Vector2D {
+  return {
+    x: (screen.x - view.offsetX) / view.scale,
+    y: (screen.y - view.offsetY) / view.scale,
+  };
+}
+
 function getViewBounds(view: ViewTransform, canvas: HTMLCanvasElement, marginPx = 80): Bounds {
   const marginWorld = marginPx / view.scale;
   return {
@@ -168,6 +207,64 @@ function getViewBounds(view: ViewTransform, canvas: HTMLCanvasElement, marginPx 
 
 function boundsIntersect(a: Bounds, b: Bounds): boolean {
   return !(a.maxX < b.minX || a.minX > b.maxX || a.maxY < b.minY || a.minY > b.maxY);
+}
+
+function polylineLength(points: Vector2D[]): number {
+  let len = 0;
+  for (let i = 1; i < points.length; i++) {
+    len += distance(points[i - 1], points[i]);
+  }
+  return len;
+}
+
+function getEdgePolyline(network: RoadNetworkImpl, edgeId: string): Vector2D[] | undefined {
+  const edge = network.getEdge(edgeId);
+  if (!edge) return undefined;
+  const laneCandidate = edge.lanes.find(l => l.laneType === 'driving') || edge.lanes[0];
+  if (laneCandidate?.centerline?.length) return laneCandidate.centerline;
+  if ((edge as any).geometry?.length) return (edge as any).geometry as Vector2D[];
+  return undefined;
+}
+
+function computeEdgeDirection(edge: any): 'forward' | 'backward' {
+  const dir = edge?.metadata?.direction ?? edge?.properties?.direction;
+  if (dir === 'backward') return 'backward';
+  return 'forward';
+}
+
+function computeEdgeStats(network: RoadNetworkImpl, edgeId: string) {
+  const edge = network.getEdge(edgeId);
+  if (!edge) return undefined;
+  const polyline = getEdgePolyline(network, edgeId);
+  if (!polyline) return undefined;
+  const length = polylineLength(polyline);
+  const speedLimit =
+    (edge as any).speedLimit ??
+    (edge as any).metadata?.speed_limit ??
+    (edge as any).properties?.speed_limit ??
+    undefined;
+  const speedVal = typeof speedLimit === 'number' ? speedLimit : undefined;
+  const travelMinutes = speedVal && speedVal > 0 ? (length / speedVal) / 60 : undefined;
+  const lanes = edge.lanes?.length;
+  return { length, speedLimit: speedVal, travelMinutes, lanes };
+}
+
+function downloadJSON(filename: string, data: any) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function copyJSON(data: any) {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+  } catch (err) {
+    console.warn('Clipboard unavailable', err);
+  }
 }
 
 function computeView(network: RoadNetworkImpl, canvas: HTMLCanvasElement): ViewTransform {
@@ -312,8 +409,12 @@ function createVehicleState(lane: Lane, position: number, category?: VehicleCate
   const speed = targetSpeed * (0.65 + Math.random() * 0.25);
   const { position: worldPos, heading } = projectAlongLane(lane, position);
 
+  const vehicleId = `veh_${vehicleCounter++}`;
+  
+  console.log(`✨ Vehicle ${vehicleId} spawned: ${type} on lane ${lane.id} at position ${position.toFixed(1)}m`);
+
   return {
-    id: `veh_${vehicleCounter++}`,
+    id: vehicleId,
     type,
     position: worldPos,
     heading,
@@ -398,6 +499,12 @@ function drawVehicle(
   const pos = worldToScreen(view, vehicle.position);
 
   ctx.save();
+  
+  // Apply fade-out for vehicles marked for removal (dead end or idle)
+  if (vehicle.fadeOutProgress !== undefined) {
+    ctx.globalAlpha = 1 - vehicle.fadeOutProgress;
+  }
+  
   ctx.translate(pos.x, pos.y);
   ctx.rotate(vehicle.heading);
   ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
@@ -458,6 +565,99 @@ function drawHeatmap(
     const pMax = worldToScreen(view, worldMax);
     ctx.fillRect(pMin.x, pMax.y, pMax.x - pMin.x, pMin.y - pMax.y);
   }
+}
+
+function pickClosestNode(
+  view: ViewTransform,
+  network: RoadNetworkImpl,
+  screen: Vector2D,
+  thresholdPx = 10
+): { id: string; dist: number } | undefined {
+  let best: { id: string; dist: number } | undefined;
+  for (const node of network.nodes.values()) {
+    const pt = worldToScreen(view, node.position);
+    const dx = pt.x - screen.x;
+    const dy = pt.y - screen.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < thresholdPx && (!best || dist < best.dist)) {
+      best = { id: node.id, dist };
+    }
+  }
+  return best;
+}
+
+function distancePointToSegment(p: Vector2D, a: Vector2D, b: Vector2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 === 0) return distance(p, a);
+  let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+  t = Math.max(0, Math.min(1, t));
+  const proj = { x: a.x + t * dx, y: a.y + t * dy };
+  return distance(p, proj);
+}
+
+function pickClosestEdge(
+  view: ViewTransform,
+  network: RoadNetworkImpl,
+  screen: Vector2D,
+  thresholdPx = 8
+): { id: string; dist: number; direction: 'forward' | 'backward' } | undefined {
+  let best: { id: string; dist: number; direction: 'forward' | 'backward' } | undefined;
+  for (const edge of network.edges.values()) {
+    const polyline = getEdgePolyline(network, edge.id);
+    if (!polyline || polyline.length < 2) continue;
+    const screenPts = polyline.map(pt => worldToScreen(view, pt));
+    for (let i = 1; i < screenPts.length; i++) {
+      const d = distancePointToSegment(screen, screenPts[i - 1], screenPts[i]);
+      if (d < thresholdPx && (!best || d < best.dist)) {
+        best = { id: edge.id, dist: d, direction: computeEdgeDirection(edge) };
+      }
+    }
+  }
+  return best;
+}
+
+function drawDirectionArrow(
+  ctx: CanvasRenderingContext2D,
+  view: ViewTransform,
+  polyline: Vector2D[],
+  direction: 'forward' | 'backward'
+): void {
+  if (polyline.length < 2) return;
+  const target = polylineLength(polyline) / 2;
+  let traversed = 0;
+  let anchor: Vector2D | null = null;
+  let heading = 0;
+  const pts = direction === 'backward' ? [...polyline].reverse() : polyline;
+
+  for (let i = 1; i < pts.length; i++) {
+    const segLen = distance(pts[i - 1], pts[i]);
+    if (traversed + segLen >= target) {
+      const t = (target - traversed) / segLen;
+      anchor = {
+        x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t,
+        y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t,
+      };
+      heading = Math.atan2(pts[i].y - pts[i - 1].y, pts[i].x - pts[i - 1].x);
+      break;
+    }
+    traversed += segLen;
+  }
+  if (!anchor) return;
+  const screen = worldToScreen(view, anchor);
+  const size = 10;
+  ctx.save();
+  ctx.translate(screen.x, screen.y);
+  ctx.rotate(heading);
+  ctx.fillStyle = '#fbbf24';
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(-size, size / 2);
+  ctx.lineTo(-size, -size / 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.restore();
 }
 
 function drawBackdrop(
@@ -572,7 +772,10 @@ function drawScene(
   view: ViewTransform,
   backdropContext?: BackdropContext,
   spawnPoints: string[] = [],
-  network?: RoadNetworkImpl
+  network?: RoadNetworkImpl,
+  selection?: Selection,
+  highlightSpawnNodes: boolean = false,
+  showRoadEdges: boolean = true
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -602,7 +805,7 @@ function drawScene(
       ? 0
       : clamp((lodScale - LOD_FADE_START) / (LOD_FULL - LOD_FADE_START), 0, 1);
 
-  if (!hideRoads) {
+  if (!hideRoads && showRoadEdges) {
     let laneIndex = 0;
     for (const lane of engine.network.lanes.values()) {
       const laneBounds = getLaneBounds(lane);
@@ -618,6 +821,33 @@ function drawScene(
     drawHeatmap(ctx, view, engine.vehicles.values(), visibleBounds);
   }
 
+  // Highlight valid spawn nodes when in placement mode
+  if (highlightSpawnNodes && network) {
+    const validNodes = getValidSpawnNodes(network);
+    for (const nodeId of validNodes) {
+      const node = network.getNode(nodeId);
+      if (!node) continue;
+      const nodeBounds = {
+        minX: node.position.x - 20,
+        maxX: node.position.x + 20,
+        minY: node.position.y - 20,
+        maxY: node.position.y + 20,
+      };
+      if (!boundsIntersect(nodeBounds, visibleBounds)) continue;
+      
+      const screen = worldToScreen(view, node.position);
+      ctx.save();
+      ctx.fillStyle = 'rgba(34, 211, 238, 0.3)'; // Cyan with transparency
+      ctx.strokeStyle = '#22d3ee';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(screen.x, screen.y, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   if (network && spawnPoints.length > 0) {
     ctx.fillStyle = '#10b981';
     for (const id of spawnPoints) {
@@ -627,6 +857,56 @@ function drawScene(
       ctx.beginPath();
       ctx.arc(screen.x, screen.y, 6, 0, Math.PI * 2);
       ctx.fill();
+    }
+  }
+
+  if (selection && network) {
+    if (selection.type === 'edge') {
+      const polyline = getEdgePolyline(network, selection.id);
+      if (polyline && polyline.length > 1) {
+        const pts = polyline.map(pt => worldToScreen(view, pt));
+        ctx.save();
+        ctx.strokeStyle = '#f97316';
+        ctx.lineWidth = 6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+        ctx.stroke();
+        ctx.restore();
+        drawDirectionArrow(ctx, view, polyline, selection.direction);
+      }
+    } else if (selection.type === 'node') {
+      const node = network.getNode(selection.id);
+      if (node) {
+        const screen = worldToScreen(view, node.position);
+        ctx.save();
+        ctx.strokeStyle = '#22d3ee';
+        ctx.fillStyle = 'rgba(34,211,238,0.25)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(screen.x, screen.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+
+        // Highlight connected edges
+        for (const edge of network.edges.values()) {
+          if (edge.fromNode !== node.id && edge.toNode !== node.id) continue;
+          const polyline = getEdgePolyline(network, edge.id);
+          if (!polyline || polyline.length < 2) continue;
+          const pts = polyline.map(pt => worldToScreen(view, pt));
+          ctx.save();
+          ctx.strokeStyle = '#22d3ee';
+          ctx.lineWidth = 5;
+          ctx.lineCap = 'round';
+          ctx.beginPath();
+          ctx.moveTo(pts[0].x, pts[0].y);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+          ctx.stroke();
+          ctx.restore();
+        }
+      }
     }
   }
 
@@ -858,7 +1138,7 @@ export default function TrafficSimulationApp() {
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
   const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('mouse');
-  const requestRedrawRef = useRef<() => void>(() => {});
+  const requestRedrawRef = useRef<(() => void) & { _pending?: boolean; _rafId?: number }>(() => {});
 
   const [scenario, setScenario] = useState<ScenarioKey>('simple_highway');
   const [isRunning, setIsRunning] = useState(true);
@@ -870,11 +1150,77 @@ export default function TrafficSimulationApp() {
     fps: 0,
   });
   const [showHud, setShowHud] = useState(true);
+  const [showRoadEdges, setShowRoadEdges] = useState(true);
+  const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
+  const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
+  const [selection, setSelection] = useState<Selection | undefined>(undefined);
+  const [streetQuery, setStreetQuery] = useState('');
+  const [streetSuggestions, setStreetSuggestions] = useState<string[]>([]);
+  const selectionRef = useRef<Selection | undefined>(undefined);
+  const lastSuggestionUpdateRef = useRef(0);
+  const applySelection = useCallback((sel?: Selection) => {
+    selectionRef.current = sel;
+    setSelection(sel);
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (runtime && canvas && view) {
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges
+      );
+    }
+  }, [spawnPointPlacementMode, showRoadEdges]);
+
+  const updateStreetSuggestions = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return;
+    const now = performance.now();
+    if (now - lastSuggestionUpdateRef.current < 150) return;
+    lastSuggestionUpdateRef.current = now;
+
+    const bounds = getViewBounds(view, canvas, 0);
+    const names = new Set<string>();
+    for (const edge of runtime.network.edges.values()) {
+      const name =
+        edge.name ||
+        (edge.metadata as any)?.name ||
+        (edge.metadata as any)?.ref ||
+        (edge as any)?.properties?.name;
+      if (!name) continue;
+      const polyline = getEdgePolyline(runtime.network, edge.id);
+      if (!polyline) continue;
+      if (!boundsIntersect(polylineBounds(polyline), bounds)) continue;
+      names.add(String(name));
+    }
+    setStreetSuggestions(Array.from(names).sort());
+  }, []);
+
+
   useEffect(() => {
     if (backdropContextRef.current) {
       backdropContextRef.current.enabled = showBackdrop;
     }
   }, [showBackdrop]);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        applySelection(undefined);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [applySelection]);
   const updateDynamicChunks = useCallback(
     (view: ViewTransform) => {
       const canvas = canvasRef.current;
@@ -913,22 +1259,35 @@ export default function TrafficSimulationApp() {
   );
 
   const requestRedraw = useCallback(() => {
-    const runtime = runtimeRef.current;
-    const canvas = canvasRef.current;
-    const view = viewRef.current;
-    const backdropCtx = backdropContextRef.current || undefined;
-    if (runtime && canvas && view) {
-      drawScene(
-        canvas,
-        runtime.engine,
-        view,
-        backdropCtx,
-        spawnPointsRef.current,
-        runtime.network
-      );
-      updateDynamicChunks(view);
+    // Use requestAnimationFrame to break potential infinite loops
+    // Cancel any pending redraw to avoid stacking
+    if (requestRedrawRef.current._rafId !== undefined) {
+      cancelAnimationFrame(requestRedrawRef.current._rafId);
     }
-  }, [updateDynamicChunks]);
+    
+    requestRedrawRef.current._rafId = requestAnimationFrame(() => {
+      requestRedrawRef.current._rafId = undefined;
+      const runtime = runtimeRef.current;
+      const canvas = canvasRef.current;
+      const view = viewRef.current;
+      const backdropCtx = backdropContextRef.current || undefined;
+      if (runtime && canvas && view) {
+        drawScene(
+          canvas,
+          runtime.engine,
+          view,
+          backdropCtx,
+          spawnPointsRef.current,
+          runtime.network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges
+        );
+        updateStreetSuggestions();
+        updateDynamicChunks(view);
+      }
+    });
+  }, [spawnPointPlacementMode, showRoadEdges, updateStreetSuggestions, updateDynamicChunks]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
   requestRedrawRef.current = requestRedraw;
@@ -962,15 +1321,17 @@ export default function TrafficSimulationApp() {
           viewRef.current,
           backdropContextRef.current || undefined,
           spawnPointsRef.current,
-          runtime.network
+          runtime.network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges
         );
+        updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
       }
     },
-    [updateDynamicChunks]
+    [updateStreetSuggestions, updateDynamicChunks]
   );
-  const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
-  const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
 
   const initialize = (options?: { seedVehicles?: boolean }) => {
     const canvas = canvasRef.current;
@@ -1005,10 +1366,6 @@ export default function TrafficSimulationApp() {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
     engine.setLaneChangeModel(new MOBILModel());
-    if (shouldSeedVehicles) {
-      seedVehicles(engine, scenario);
-    }
-
     runtimeRef.current = { engine, network };
     backdropContextRef.current = {
       network,
@@ -1022,8 +1379,18 @@ export default function TrafficSimulationApp() {
     hudAccumulatorRef.current = 0;
     frameCountRef.current = 0;
     lastInitSeedRef.current = shouldSeedVehicles;
-
-    drawScene(canvas, engine, viewRef.current, backdropContextRef.current || undefined, spawnPointsRef.current, network);
+    drawScene(
+      canvas,
+      engine,
+      viewRef.current,
+      backdropContextRef.current || undefined,
+      spawnPointsRef.current,
+      network,
+      selectionRef.current,
+      spawnPointPlacementMode,
+      showRoadEdges
+    );
+    updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
     setHud({
       time: 0,
@@ -1031,6 +1398,26 @@ export default function TrafficSimulationApp() {
       avgSpeed: 0,
       fps: 0,
     });
+
+    if (shouldSeedVehicles) {
+      setTimeout(() => {
+        seedVehicles(engine, scenario);
+        drawScene(
+          canvas,
+          engine,
+          viewRef.current as ViewTransform,
+          backdropContextRef.current || undefined,
+          spawnPointsRef.current,
+          network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges
+        );
+        updateStreetSuggestions();
+        updateDynamicChunks(viewRef.current as ViewTransform);
+        setHud(h => ({ ...h, vehicles: engine.vehicles.size }));
+      }, 0);
+    }
   };
 
   const attachCanvasRef = useCallback((node: HTMLCanvasElement | null) => {
@@ -1039,6 +1426,67 @@ export default function TrafficSimulationApp() {
       setCanvasReady(true);
     }
   }, []);
+
+  const fitViewToBounds = useCallback(
+    (bounds: Bounds) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const padding = 60;
+      const width = Math.max(1, bounds.maxX - bounds.minX);
+      const height = Math.max(1, bounds.maxY - bounds.minY);
+      const scale = clamp(
+        Math.min(
+          canvas.width / (width * 1.1 + padding),
+          canvas.height / (height * 1.1 + padding)
+        ),
+        MIN_ZOOM_SLIDER,
+        MAX_ZOOM_SLIDER
+      );
+      const center = {
+        x: (bounds.minX + bounds.maxX) / 2,
+        y: (bounds.minY + bounds.maxY) / 2,
+      };
+      viewRef.current = {
+        scale,
+        offsetX: canvas.width / 2 - center.x * scale,
+        offsetY: canvas.height / 2 - center.y * scale,
+      };
+      setZoomLevel(scale);
+    },
+    []
+  );
+
+  const searchStreetInView = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return;
+    const query = streetQuery.trim().toLowerCase();
+    if (!query) return;
+
+    const visible = getViewBounds(view, canvas, 0);
+    let match: { edgeId: string; dir: 'forward' | 'backward'; bounds: Bounds } | undefined;
+
+    for (const edge of runtime.network.edges.values()) {
+      const name =
+        edge.name ||
+        (edge.metadata as any)?.name ||
+        (edge.metadata as any)?.ref ||
+        (edge as any)?.properties?.name;
+      if (!name || !String(name).toLowerCase().includes(query)) continue;
+      const polyline = getEdgePolyline(runtime.network, edge.id);
+      if (!polyline) continue;
+      const pb = polylineBounds(polyline);
+      if (!boundsIntersect(pb, visible)) continue;
+      match = { edgeId: edge.id, dir: computeEdgeDirection(edge), bounds: pb };
+      break;
+    }
+
+    if (match) {
+      fitViewToBounds(match.bounds);
+      applySelection({ type: 'edge', id: match.edgeId, direction: match.dir });
+    }
+  }, [streetQuery, applySelection, fitViewToBounds]);
 
   useEffect(() => {
     if (!canvasReady) return;
@@ -1060,11 +1508,14 @@ export default function TrafficSimulationApp() {
         view,
         backdropContextRef.current || undefined,
         spawnPointsRef.current,
-        runtime.network
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges
       );
       updateDynamicChunks(view);
     }
-  }, [spawnPoints]);
+  }, [spawnPoints, spawnPointPlacementMode, showRoadEdges]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1099,7 +1550,10 @@ export default function TrafficSimulationApp() {
           viewRef.current,
           backdropContextRef.current || undefined,
           spawnPointsRef.current,
-          runtime.network
+          runtime.network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges
         );
         setZoomLevel(viewRef.current.scale);
         updateDynamicChunks(viewRef.current);
@@ -1135,7 +1589,10 @@ export default function TrafficSimulationApp() {
         view,
         backdropContextRef.current || undefined,
         spawnPointsRef.current,
-        runtime.network
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges
       );
 
       hudAccumulatorRef.current += delta;
@@ -1169,7 +1626,7 @@ export default function TrafficSimulationApp() {
     return () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning, timeScale]);
+  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1228,8 +1685,12 @@ export default function TrafficSimulationApp() {
         viewRef.current,
         backdropContextRef.current || undefined,
         spawnPointsRef.current,
-        runtime.network
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges
       );
+      updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
       setZoomLevel(viewRef.current.scale);
     };
@@ -1278,8 +1739,12 @@ export default function TrafficSimulationApp() {
         viewRef.current,
         backdropContextRef.current || undefined,
         spawnPointsRef.current,
-        runtime.network
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges
       );
+      updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
     };
 
@@ -1314,7 +1779,6 @@ export default function TrafficSimulationApp() {
     if (!canvas) return;
 
     const handleClick = (event: MouseEvent) => {
-      if (!spawnPointPlacementMode) return;
       const runtime = runtimeRef.current;
       const view = viewRef.current;
       if (!runtime || !view) {
@@ -1324,26 +1788,55 @@ export default function TrafficSimulationApp() {
       const rect = canvas.getBoundingClientRect();
       const x = event.clientX - rect.left;
       const y = event.clientY - rect.top;
-      const closest = findClosestNode(view, x, y, runtime.network);
-      setSpawnPointPlacementMode(false);
-      if (!closest) return;
-      setSpawnPoints(prev => {
-        if (prev.includes(closest)) return prev;
-        const next = [...prev, closest];
-        spawnPointsRef.current = next;
-        return next;
-      });
+
+      if (spawnPointPlacementMode) {
+        // Only allow nodes with outgoing edges
+        const closest = findClosestNode(view, x, y, runtime.network, true);
+        setSpawnPointPlacementMode(false);
+        if (!closest) {
+          // Show feedback that node is invalid
+          console.log('⚠️ Cannot place spawn point: node has no outgoing edges');
+          return;
+        }
+        setSpawnPoints(prev => {
+          if (prev.includes(closest)) return prev;
+          const next = [...prev, closest];
+          spawnPointsRef.current = next;
+          return next;
+        });
+        applySelection(undefined);
+        return;
+      }
+
+      const nodeHit = pickClosestNode(view, runtime.network, { x, y });
+      if (nodeHit) {
+        applySelection({ type: 'node', id: nodeHit.id });
+        return;
+      }
+
+      const edgeHit = pickClosestEdge(view, runtime.network, { x, y });
+      if (edgeHit) {
+        applySelection({ type: 'edge', id: edgeHit.id, direction: edgeHit.direction });
+        return;
+      }
+
+      applySelection(undefined);
     };
 
     canvas.addEventListener('click', handleClick);
     return () => {
       canvas.removeEventListener('click', handleClick);
     };
-  }, [spawnPointPlacementMode]);
+  }, [spawnPointPlacementMode, applySelection]);
 
   const spawnVehicle = () => {
     const runtime = runtimeRef.current;
-    if (!runtime) return;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return;
+
+    // Get visible bounds to filter spawn points
+    const visibleBounds = getViewBounds(view, canvas, 0);
 
     const pickLaneFromNode = (nodeId: string): Lane | undefined => {
       const candidateLanes: Lane[] = [];
@@ -1382,12 +1875,26 @@ export default function TrafficSimulationApp() {
     };
 
     if (spawnPointsRef.current.length > 0) {
-      const choice =
-        spawnPointsRef.current[Math.floor(Math.random() * spawnPointsRef.current.length)];
-      const lane = pickLaneFromNode(choice);
-      if (lane && trySpawnInLane(lane)) {
-        return;
+      // Filter spawn points to only those in visible area
+      const visibleSpawnPoints = spawnPointsRef.current.filter(nodeId => {
+        const node = runtime.network.getNode(nodeId);
+        if (!node) return false;
+        return (
+          node.position.x >= visibleBounds.minX &&
+          node.position.x <= visibleBounds.maxX &&
+          node.position.y >= visibleBounds.minY &&
+          node.position.y <= visibleBounds.maxY
+        );
+      });
+      
+      if (visibleSpawnPoints.length > 0) {
+        const choice = visibleSpawnPoints[Math.floor(Math.random() * visibleSpawnPoints.length)];
+        const lane = pickLaneFromNode(choice);
+        if (lane && trySpawnInLane(lane)) {
+          return;
+        }
       }
+      // If no visible spawn points, fall through to default behavior
     }
 
     const lanes = Array.from(runtime.network.lanes.values()).filter(
@@ -1408,6 +1915,19 @@ export default function TrafficSimulationApp() {
 
     trySpawnInLane(bestLane);
   };
+
+  const runtimeForSelection = runtimeRef.current;
+  const selectedNode =
+    selection?.type === 'node' ? runtimeForSelection?.network.getNode(selection.id) : undefined;
+  const selectedEdge =
+    selection?.type === 'edge' ? runtimeForSelection?.network.getEdge(selection.id) : undefined;
+  const selectedStats =
+    selection?.type === 'edge' && runtimeForSelection
+      ? computeEdgeStats(runtimeForSelection.network, selection.id)
+      : undefined;
+  const selectedJSON = selection
+    ? JSON.stringify(selection.type === 'node' ? selectedNode : selectedEdge, null, 2)
+    : '';
 
   const handleAddVehicle = () => {
     spawnVehicle();
@@ -1461,6 +1981,39 @@ export default function TrafficSimulationApp() {
             <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
             <option value="test_perchance">Test Perchance (full)</option>
           </select>
+        </div>
+
+        <div className="space-y-2">
+          <div className="text-sm uppercase tracking-wide text-slate-400">Find street</div>
+          <div className="flex gap-2">
+            <input
+              value={streetQuery}
+              onChange={e => setStreetQuery(e.target.value)}
+              list="street-suggestions"
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  searchStreetInView();
+                }
+              }}
+              placeholder="Street name"
+              className="flex-1 rounded bg-slate-800 border border-slate-700 px-3 py-2 text-sm"
+            />
+            <button
+              onClick={searchStreetInView}
+              className="rounded bg-slate-800 hover:bg-slate-700 px-3 py-2 text-sm"
+            >
+              Go
+            </button>
+            <datalist id="street-suggestions">
+              {streetSuggestions.map(name => (
+                <option key={name} value={name} />
+              ))}
+            </datalist>
+          </div>
+          <p className="text-xs text-slate-400">
+            Searches visible area, zooms to the first match and selects it.
+          </p>
         </div>
 
         <div className="space-y-3">
@@ -1612,6 +2165,14 @@ export default function TrafficSimulationApp() {
           <Info size={14} />
           {showBackdrop ? 'Hide' : 'Show'} map details
         </button>
+
+        <button
+          onClick={() => setShowRoadEdges(v => !v)}
+          className="flex items-center gap-2 text-sm text-slate-300 hover:text-white"
+        >
+          <Info size={14} />
+          {showRoadEdges ? 'Hide' : 'Show'} road edges
+        </button>
       </div>
 
       <div className="relative bg-slate-950">
@@ -1633,6 +2194,93 @@ export default function TrafficSimulationApp() {
             <div className="flex justify-between gap-6">
               <span className="text-slate-400">fps</span>
               <span className="font-mono">{hud.fps.toFixed(0)}</span>
+            </div>
+          </div>
+        )}
+        {selection && (selectedNode || selectedEdge) && (
+          <div className="absolute bottom-4 right-4 w-80 max-h-[70vh] overflow-hidden rounded border border-slate-800 bg-slate-900/90 backdrop-blur p-4 shadow-lg text-sm text-slate-100 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-xs uppercase tracking-wide text-slate-400">
+                  Selected type: {selection.type === 'node' ? 'Node' : 'Edge'}
+                </div>
+                <div className="font-mono text-slate-100 text-xs break-all">
+                  {selection.id}
+                </div>
+              </div>
+              <button
+                className="text-xs text-slate-300 hover:text-white"
+                onClick={() => applySelection(undefined)}
+              >
+                Clear
+              </button>
+            </div>
+
+            {selection.type === 'edge' && selectedStats && (
+              <div className="space-y-1 text-xs text-slate-300">
+                <div className="flex justify-between">
+                  <span>Length</span>
+                  <span className="font-mono text-white">{selectedStats.length.toFixed(1)} m</span>
+                </div>
+                {selectedStats.speedLimit && (
+                  <div className="flex justify-between">
+                    <span>Speed limit</span>
+                    <span className="font-mono text-white">
+                      {(selectedStats.speedLimit * 3.6).toFixed(0)} km/h
+                    </span>
+                  </div>
+                )}
+                {selectedStats.travelMinutes && (
+                  <div className="flex justify-between">
+                    <span>Est. travel time</span>
+                    <span className="font-mono text-white">
+                      {selectedStats.travelMinutes.toFixed(1)} min
+                    </span>
+                  </div>
+                )}
+                {selectedStats.lanes && (
+                  <div className="flex justify-between">
+                    <span>Lanes</span>
+                    <span className="font-mono text-white">{selectedStats.lanes}</span>
+                  </div>
+                )}
+                <div className="flex justify-between items-center">
+                  <span>Direction</span>
+                  <span className="font-mono text-white">
+                    {selection.direction === 'forward' ? '→ forward' : '← backward'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button
+                onClick={() =>
+                  selection &&
+                  copyJSON(selection.type === 'node' ? selectedNode : selectedEdge)
+                }
+                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
+              >
+                Copy JSON
+              </button>
+              <button
+                onClick={() => {
+                  if (!selection) return;
+                  const data = selection.type === 'node' ? selectedNode : selectedEdge;
+                  if (!data) return;
+                  const filename = `${selection.type}_${selection.id}.json`;
+                  downloadJSON(filename, data);
+                }}
+                className="flex-1 rounded bg-slate-800 hover:bg-slate-700 px-2 py-1 text-xs text-slate-100"
+              >
+                Download JSON
+              </button>
+            </div>
+
+            <div className="rounded bg-slate-950 border border-slate-800 p-2 text-xs text-slate-200 max-h-48 overflow-auto">
+              <pre className="whitespace-pre-wrap font-mono text-[11px] leading-snug">
+                {selectedJSON}
+              </pre>
             </div>
           </div>
         )}

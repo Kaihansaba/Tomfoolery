@@ -144,12 +144,22 @@ export class TrafficSimulationEngine implements SimulationEngine {
       let nextAllowed = vehicles.length > 0 ? vehicles[vehicles.length - 1].lanePosition : 0;
       for (let i = vehicles.length - 2; i >= 0; i--) {
         const follower = vehicles[i];
+        const leader = vehicles[i + 1];
+        const oldLanePosition = follower.lanePosition;
+        
         const maxPosition = Math.max(0, nextAllowed - minGap);
         if (follower.lanePosition > maxPosition) {
+          const gap = leader.lanePosition - follower.lanePosition;
+          const adjustment = oldLanePosition - maxPosition;
+          
           follower.lanePosition = maxPosition;
           follower.velocity = Math.min(follower.velocity, Math.max(0, vehicles[i + 1].velocity));
           follower.acceleration = Math.min(follower.acceleration, -1);
           this.updateGlobalPosition(follower, lane);
+          
+          if (adjustment > 1.0) {
+            console.log(`⚠️ Vehicle ${follower.id} position reset: moved back ${adjustment.toFixed(2)}m (too close to ${leader.id}, gap was ${gap.toFixed(2)}m)`);
+          }
         }
         nextAllowed = follower.lanePosition;
       }
@@ -189,6 +199,13 @@ export class TrafficSimulationEngine implements SimulationEngine {
 
       const lane = this.network.getLane(vehicle.laneId);
       if (!lane) continue;
+
+      // If vehicle is at end of lane with no successors (dead end), keep it stopped
+      if (vehicle.lanePosition >= lane.length - 0.1 && lane.successors.length === 0) {
+        vehicle.velocity = 0;
+        vehicle.acceleration = 0;
+        continue;
+      }
 
       const leader = this.findLeaderInLane(vehicle.laneId, vehicle.lanePosition, laneVehicles, vehicle.id);
 
@@ -249,6 +266,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
       );
       
       if (decision.shouldChange && decision.targetLaneId) {
+        console.log(`🚦 Vehicle ${vehicle.id} starting lane change: ${vehicle.laneId} → ${decision.targetLaneId}`);
         this.initiateLaneChange(vehicle, decision.targetLaneId);
         this.laneChangeCooldown.set(vehicle.id, this.currentTime);
       }
@@ -263,6 +281,9 @@ export class TrafficSimulationEngine implements SimulationEngine {
   
   private updateLaneChangeProgress(vehicle: VehicleState): void {
     if (!vehicle.targetLaneId || vehicle.laneChangeProgress === undefined) return;
+    
+    const oldLaneId = vehicle.laneId;
+    const oldLanePosition = vehicle.lanePosition;
     
     const laneChangeDuration = 3.0; // seconds
     const progressIncrement = this.config.timeStep / laneChangeDuration;
@@ -307,6 +328,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
           (leader && newPos > leader.lanePosition - minMergeGap) ||
           (follower && newPos < follower.lanePosition + minMergeGap)
         ) {
+          console.log(`❌ Vehicle ${vehicle.id} aborted lane change: ${oldLaneId} → ${targetLaneId} (not enough space)`);
           vehicle.isChangingLane = false;
           vehicle.targetLaneId = undefined;
           vehicle.laneChangeProgress = undefined;
@@ -321,6 +343,13 @@ export class TrafficSimulationEngine implements SimulationEngine {
         if (lane) {
           vehicle.lanePosition = Math.min(lane.length, Math.max(0, vehicle.lanePosition));
           this.updateGlobalPosition(vehicle, lane);
+          
+          const positionJump = oldLanePosition - vehicle.lanePosition;
+          console.log(`✅ Vehicle ${vehicle.id} completed lane change: ${oldLaneId} → ${targetLaneId}`);
+          
+          if (Math.abs(positionJump) > 5) {
+            console.warn(`⚠️ Vehicle ${vehicle.id} had large position jump: ${positionJump.toFixed(2)}m during lane change`);
+          }
         }
       }
 
@@ -333,6 +362,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   private updatePositions(dt: number): void {
+    const toRemove: VehicleID[] = [];
     for (const vehicle of this.vehicles.values()) {
       // Update velocity
       const newVelocity = Math.max(0, vehicle.velocity + vehicle.acceleration * dt);
@@ -343,7 +373,10 @@ export class TrafficSimulationEngine implements SimulationEngine {
       
       // Check lane boundaries
       let lane = this.network.getLane(vehicle.laneId);
-      if (!lane) continue;
+      if (!lane) {
+        console.warn(`⚠️ Vehicle ${vehicle.id}: Lane ${vehicle.laneId} not found, skipping`);
+        continue;
+      }
       
       if (vehicle.lanePosition > lane.length) {
         // Vehicle has left this lane - handle successor
@@ -356,29 +389,154 @@ export class TrafficSimulationEngine implements SimulationEngine {
       
       // Update global position from lane coordinates
       this.updateGlobalPosition(vehicle, lane);
+
+      // Track idle time and fade out stuck vehicles
+      if (!vehicle.isAtDeadEnd) {
+        const idleSpeed = 0.3;
+        const idleAccel = 0.3;
+        const timeout = 8; // seconds before fading a stuck vehicle
+        if (vehicle.velocity < idleSpeed && Math.abs(vehicle.acceleration) < idleAccel) {
+          vehicle.idleTime = (vehicle.idleTime ?? 0) + dt;
+          if (vehicle.idleTime > timeout) {
+            vehicle.fadeOutProgress = (vehicle.fadeOutProgress ?? 0) + dt / 2; // 2s fade
+            if (vehicle.fadeOutProgress >= 1) {
+              toRemove.push(vehicle.id);
+            }
+          }
+        } else {
+          vehicle.idleTime = 0;
+          if (!vehicle.isAtDeadEnd) {
+            vehicle.fadeOutProgress = undefined;
+          }
+        }
+      }
+    }
+
+    for (const id of toRemove) {
+      this.removeVehicle(id);
     }
   }
   
+  private leadsToDeadEnd(laneId: LaneID, visited: Set<LaneID> = new Set(), depth: number = 0): boolean {
+    // Prevent infinite recursion
+    if (visited.has(laneId) || depth > 10) return false;
+    visited.add(laneId);
+    
+    const lane = this.network.getLane(laneId);
+    if (!lane) return true;
+    
+    // If no successors, it's a dead end
+    if (lane.successors.length === 0) return true;
+    
+    // Check if all successors lead to dead ends
+    for (const successorId of lane.successors) {
+      if (!this.leadsToDeadEnd(successorId, new Set(visited), depth + 1)) {
+        return false; // At least one path continues
+      }
+    }
+    
+    return true; // All paths lead to dead ends
+  }
+
   private handleLaneTransition(vehicle: VehicleState, currentLane: Lane): void {
+    const oldLaneId = vehicle.laneId;
+    const oldLanePosition = vehicle.lanePosition;
+    
     let lane = currentLane;
     let position = vehicle.lanePosition;
+    const transitionPath: string[] = [currentLane.id];
 
     while (position > lane.length && lane.successors.length > 0) {
       position -= lane.length;
-      const nextLaneId = lane.successors[0];
-      const nextLane = this.network.getLane(nextLaneId);
-      if (!nextLane) break;
+      let candidateLanes = lane.successors
+        .map(id => this.network.getLane(id))
+        .filter((l): l is Lane => {
+          if (!l) return false;
+          return l.laneType === 'driving';
+        });
+
+      if (candidateLanes.length === 0) {
+        const edge = this.network.getEdge(lane.edgeId);
+        const node = edge ? this.network.getNode(edge.toNode) : undefined;
+        if (node) {
+          for (const outEdgeId of node.outgoingEdges) {
+            const outEdge = this.network.getEdge(outEdgeId);
+            if (!outEdge) continue;
+            const idx = Math.min(lane.index, outEdge.lanes.length - 1);
+            const cand = outEdge.lanes[idx];
+            if (cand && cand.laneType === 'driving') candidateLanes.push(cand);
+          }
+        }
+      }
+
+      if (candidateLanes.length === 0) {
+        break;
+      }
+
+      // Weighted random selection to avoid bias toward the first successor
+      const weights = candidateLanes.map(next => {
+        const nextEdge = this.network.getEdge(next.edgeId);
+        const currentEdge = this.network.getEdge(lane.edgeId);
+        const indexAffinity = 1 / (1 + Math.abs(next.index - lane.index));
+        const sameRoadBonus =
+          nextEdge && currentEdge && nextEdge.roadType === currentEdge.roadType ? 0.5 : 0;
+        const deadEndPenalty = this.leadsToDeadEnd(next.id) ? -0.5 : 0.5;
+        return Math.max(0.05, 1 + indexAffinity + sameRoadBonus + deadEndPenalty);
+      });
+
+      const total = weights.reduce((s, w) => s + w, 0);
+      let pick = Math.random() * total;
+      let nextLane = candidateLanes[candidateLanes.length - 1];
+      for (let i = 0; i < candidateLanes.length; i++) {
+        pick -= weights[i];
+        if (pick <= 0) {
+          nextLane = candidateLanes[i];
+          break;
+        }
+      }
+
+      transitionPath.push(nextLane.id);
       lane = nextLane;
     }
 
     if (position > lane.length && lane.successors.length === 0) {
+      // Dead end - start fade-out animation
+      if (!vehicle.isAtDeadEnd) {
+        console.log(`🚗 Vehicle ${vehicle.id} reached dead end at node (no outgoing edges), fading out`);
+        vehicle.isAtDeadEnd = true;
+        vehicle.fadeOutProgress = 0;
+      }
       vehicle.lanePosition = lane.length;
-      this.removeVehicle(vehicle.id);
+      vehicle.velocity = 0;
+      vehicle.acceleration = 0;
+      
+      // Increment fade-out progress
+      if (vehicle.fadeOutProgress !== undefined) {
+        vehicle.fadeOutProgress = Math.min(1, vehicle.fadeOutProgress + this.config.timeStep / 2.0); // 2 second fade
+        if (vehicle.fadeOutProgress >= 1) {
+          // Fade complete - remove vehicle
+          this.removeVehicle(vehicle.id);
+        }
+      }
       return;
     }
 
-    vehicle.laneId = lane.id;
-    vehicle.lanePosition = Math.min(lane.length, Math.max(0, position));
+    const newLaneId = lane.id;
+    const newLanePosition = Math.min(lane.length, Math.max(0, position));
+    const positionJump = oldLanePosition - newLanePosition;
+    
+    vehicle.laneId = newLaneId;
+    vehicle.lanePosition = newLanePosition;
+    
+    if (transitionPath.length > 1) {
+      console.log(`🔄 Vehicle ${vehicle.id} reached node and transitioned: ${oldLaneId} → ${newLaneId} (path: ${transitionPath.join(' → ')})`);
+    } else {
+      console.log(`🔄 Vehicle ${vehicle.id} reached end of lane ${oldLaneId} and moved to ${newLaneId}`);
+    }
+    
+    if (Math.abs(positionJump) > 5) {
+      console.warn(`⚠️ Vehicle ${vehicle.id} had large position jump: ${positionJump.toFixed(2)}m during transition`);
+    }
   }
   
   private updateGlobalPosition(vehicle: VehicleState, lane: Lane): void {
@@ -492,6 +650,10 @@ export class TrafficSimulationEngine implements SimulationEngine {
   }
   
   removeVehicle(id: VehicleID): void {
+    const vehicle = this.vehicles.get(id);
+    if (vehicle) {
+      console.log(`🚗 Vehicle ${id} despawned (reached end of road at lane ${vehicle.laneId})`);
+    }
     this.vehicles.delete(id);
     this.spatialIndex.remove(id);
   }
