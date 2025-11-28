@@ -1041,20 +1041,22 @@ function drawScene(
     }
   }
 
-  // Traffic lights
-  for (const tl of trafficLights) {
-    const screen = worldToScreen(view, tl.position);
-    ctx.save();
-    ctx.translate(screen.x, screen.y);
-    ctx.rotate(tl.heading);
-    ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.rect(-6, -10, 12, 20);
-    ctx.fill();
-    ctx.stroke();
-    ctx.restore();
+  // Traffic lights (only show when roads are shown)
+  if (!hideRoads) {
+    for (const tl of trafficLights) {
+      const screen = worldToScreen(view, tl.position);
+      ctx.save();
+      ctx.translate(screen.x, screen.y);
+      ctx.rotate(tl.heading);
+      ctx.fillStyle = tl.state === 'green' ? '#22c55e' : '#ef4444';
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.rect(-6, -10, 12, 20);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   if (selection && network) {
