@@ -100,6 +100,7 @@ type BackdropContext = {
   pendingTiles: Map<string, Promise<HTMLImageElement>>;
   requestRedraw: () => void;
   enabled: boolean;
+  theme?: BackdropConfig;
 };
 
 let vehicleCounter = 0;
@@ -372,6 +373,18 @@ const DEFAULT_BACKDROP: BackdropConfig = {
   minZoom: 0,
   maxZoom: 19,
   tileSize: 256,
+};
+
+const BACKDROP_THEMES: Record<string, BackdropConfig> = {
+  osm: DEFAULT_BACKDROP,
+  light: {
+    ...DEFAULT_BACKDROP,
+    tileUrl: 'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+  },
+  dark: {
+    ...DEFAULT_BACKDROP,
+    tileUrl: 'https://a.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+  },
 };
 
 function lonToTile(lon: number, zoom: number): number {
@@ -830,6 +843,7 @@ function drawBackdrop(
   canvas: HTMLCanvasElement,
   view: ViewTransform,
   network: RoadNetworkImpl,
+  theme: BackdropConfig | undefined,
   visibleBounds: Bounds,
   tileCache: Map<string, HTMLImageElement>,
   pending: Map<string, Promise<HTMLImageElement>>,
@@ -838,7 +852,7 @@ function drawBackdrop(
   const geoRef = network.geoReference;
   if (!geoRef) return;
 
-  const backdrop = network.backdrop ?? DEFAULT_BACKDROP;
+  const backdrop = theme ?? network.backdrop ?? DEFAULT_BACKDROP;
   if (backdrop.type !== 'rasterTile') return;
 
   const tileSize = backdrop.tileSize ?? 256;
@@ -871,11 +885,11 @@ function drawBackdrop(
   for (let x = tileX0; x <= tileX1; x++) {
     for (let y = tileY0; y <= tileY1; y++) {
       const wrappedX = ((x % numTiles) + numTiles) % numTiles;
-      const url = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
+      const tileUrl = (backdrop.tileUrl || DEFAULT_BACKDROP.tileUrl)
         .replace('{z}', String(zoom))
         .replace('{x}', String(wrappedX))
         .replace('{y}', String(y));
-      const key = `${zoom}-${wrappedX}-${y}`;
+      const key = `${tileUrl}-${zoom}-${wrappedX}-${y}`;
 
       const lonLeft = tileToLon(x, zoom);
       const lonRight = tileToLon(x + 1, zoom);
@@ -913,7 +927,7 @@ function drawBackdrop(
           image.crossOrigin = 'anonymous';
           image.onload = () => resolve(image);
           image.onerror = reject;
-          image.src = url;
+          image.src = tileUrl;
         })
           .then(image => {
             tileCache.set(key, image);
@@ -957,6 +971,7 @@ function drawScene(
       canvas,
       view,
       backdropContext.network,
+      backdropContext.theme,
       visibleBounds,
       backdropContext.tileCache,
       backdropContext.pendingTiles,
@@ -1360,6 +1375,7 @@ export default function TrafficSimulationApp() {
   const baseNetworkJSONRef = useRef<NetworkJSON | null>(null);
   const dynamicActiveRef = useRef(false);
   const [showBackdrop, setShowBackdrop] = useState(true);
+  const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('osm');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [bulkCount, setBulkCount] = useState(10);
   const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('trackpad');
@@ -1532,6 +1548,16 @@ export default function TrafficSimulationApp() {
   requestRedrawRef.current.fn = requestRedraw;
 
   useEffect(() => {
+    if (backdropContextRef.current) {
+      backdropContextRef.current.theme = BACKDROP_THEMES[backdropTheme] || DEFAULT_BACKDROP;
+    }
+    // flush caches so old tiles aren't reused across themes
+    tileCacheRef.current.clear();
+    pendingTileRef.current.clear();
+    requestRedraw();
+  }, [backdropTheme, requestRedraw]);
+
+  useEffect(() => {
     trafficLightsRef.current = trafficLights;
   }, [trafficLights]);
 
@@ -1622,6 +1648,7 @@ export default function TrafficSimulationApp() {
       pendingTiles: pendingTileRef.current,
       requestRedraw,
       enabled: showBackdrop,
+      theme: BACKDROP_THEMES[backdropTheme] || DEFAULT_BACKDROP,
     };
     viewRef.current = computeView(network, canvas);
     lastFrameRef.current = performance.now();
@@ -2822,6 +2849,15 @@ export default function TrafficSimulationApp() {
                 >
                   {showBackdrop ? 'Hide map detail' : 'Show map detail'}
                 </button>
+                <select
+                  value={backdropTheme}
+                  onChange={e => setBackdropTheme(e.target.value as keyof typeof BACKDROP_THEMES)}
+                  className="rounded-full px-3 py-2 text-sm border border-orange-500/25 bg-black/70 hover:border-orange-400 transition text-orange-100"
+                >
+                  <option value="osm">OSM Standard</option>
+                  <option value="light">Light (Carto)</option>
+                  <option value="dark">Dark (Carto)</option>
+                </select>
                 <button
                   onClick={() => applyZoom(1)}
                   className="rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
