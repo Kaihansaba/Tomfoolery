@@ -2108,6 +2108,26 @@ export default function TrafficSimulationApp() {
         }
 
         if (obstacleRemovalMode) {
+          // First try to remove a nearby traffic light
+          const viewLocal = viewRef.current;
+          if (viewLocal && trafficLightsRef.current.length > 0) {
+            const hitLightIndex = trafficLightsRef.current.findIndex(tl => {
+              const screenTL = worldToScreen(viewLocal, tl.position);
+              const dx = screenTL.x - x;
+              const dy = screenTL.y - y;
+              return dx * dx + dy * dy < 14 * 14;
+            });
+            if (hitLightIndex >= 0) {
+              const next = trafficLightsRef.current.slice();
+              next.splice(hitLightIndex, 1);
+              trafficLightsRef.current = next;
+              setTrafficLights(next);
+              setObstacleRemovalMode(false);
+              requestRedrawRef.current.fn();
+              return;
+            }
+          }
+
           const removed = removeObstacleAt(runtime.engine, laneHit.lane, laneHit.s);
           setObstacleRemovalMode(false);
           requestRedrawRef.current.fn();
