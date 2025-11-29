@@ -1876,7 +1876,9 @@ function drawScene(
   }
 
   for (const vehicle of engine.vehicles.values()) {
-    if (hideRoads) continue;
+    const skipVehicleDraw =
+      simulationMode === 'macro' && lodScale < 0.9;
+    if (hideRoads || skipVehicleDraw) continue;
     const vehicleBounds: Bounds = {
       minX: vehicle.position.x - 6,
       maxX: vehicle.position.x + 6,
@@ -2399,7 +2401,6 @@ export default function TrafficSimulationApp() {
   const toolsListRef = useRef<HTMLDivElement | null>(null);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [performanceMode, setPerformanceMode] = useState(false);
-  const prevShowRoadEdgesRef = useRef<boolean>(true);
   const prevShowBackdropRef = useRef<boolean>(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
@@ -2455,10 +2456,7 @@ export default function TrafficSimulationApp() {
 
     if (!performanceMode && hud.vehicles >= activateAt) {
       setPerformanceMode(true);
-      prevShowRoadEdgesRef.current = showRoadEdges;
       prevShowBackdropRef.current = showBackdrop;
-      setShowRoadEdges(false);
-      setShowBackdrop(false);
       setPanelOpen(false);
       setToolsOpen(false);
       return;
@@ -2466,15 +2464,10 @@ export default function TrafficSimulationApp() {
 
     if (performanceMode && hud.vehicles <= deactivateAt) {
       setPerformanceMode(false);
-      setShowRoadEdges(prevShowRoadEdgesRef.current);
       setShowBackdrop(prevShowBackdropRef.current);
       return;
     }
 
-    if (performanceMode) {
-      if (showRoadEdges) setShowRoadEdges(false);
-      if (showBackdrop) setShowBackdrop(false);
-    }
   }, [hud.vehicles, performanceMode, showRoadEdges, showBackdrop]);
 
   const applySelection = useCallback((sel?: Selection) => {
@@ -3262,18 +3255,21 @@ export default function TrafficSimulationApp() {
         frameCountRef.current += 1;
       }
       if (hudAccumulatorRef.current >= 0.25) {
-        const vehicles = Array.from(runtime.engine.vehicles.values());
-        const avgSpeed =
-          vehicles.length > 0
-            ? vehicles.reduce((sum, v) => sum + v.velocity, 0) / vehicles.length
-            : 0;
-        const fps = shouldRender && hudAccumulatorRef.current > 0
-          ? frameCountRef.current / hudAccumulatorRef.current
-          : hud.fps;
+        let vehicleCount = 0;
+        let speedSum = 0;
+        for (const v of runtime.engine.vehicles.values()) {
+          vehicleCount += 1;
+          speedSum += v.velocity;
+        }
+        const avgSpeed = vehicleCount > 0 ? speedSum / vehicleCount : 0;
+        const fps =
+          shouldRender && hudAccumulatorRef.current > 0
+            ? frameCountRef.current / hudAccumulatorRef.current
+            : hud.fps;
 
         setHud({
           time: runtime.engine.currentTime,
-          vehicles: vehicles.length,
+          vehicles: vehicleCount,
           avgSpeed,
           fps,
         });
