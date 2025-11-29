@@ -26,10 +26,11 @@ export class TrafficSimulationEngine implements SimulationEngine {
   vehicles: Map<VehicleID, VehicleState> = new Map();
   network: RoadNetwork;
   private readonly HOTSPOT_REACHED_RADIUS = 30; // meters
-  
+  private readonly MAX_SUBSTEPS = 3; // cap fixed steps per frame to avoid spiral of death
+ 
   driverModels: Map<VehicleCategory, IDriverModel> = new Map();
   laneChangeModel!: ILaneChangeModel;
-  
+ 
   spatialIndex: ISpatialIndex;
   
   private config: SimulationConfig;
@@ -179,9 +180,10 @@ export class TrafficSimulationEngine implements SimulationEngine {
   step(dt: number): void {
     this.frameAccumulator += dt;
     const timeStep = this.config.timeStep;
-    
+    let steps = 0;
+ 
     // Fixed timestep with accumulator (for determinism)
-    while (this.frameAccumulator >= timeStep) {
+    while (this.frameAccumulator >= timeStep && steps < this.MAX_SUBSTEPS) {
       const laneVehicles = this.buildLaneVehicleMap();
 
       this.handleLaneChanges(laneVehicles);
@@ -195,6 +197,13 @@ export class TrafficSimulationEngine implements SimulationEngine {
       
       this.currentTime += timeStep;
       this.frameAccumulator -= timeStep;
+      steps += 1;
+    }
+
+    // Prevent unbounded accumulation if we hit the substep cap
+    const maxCarry = timeStep * this.MAX_SUBSTEPS;
+    if (this.frameAccumulator > maxCarry) {
+      this.frameAccumulator = maxCarry;
     }
   }
   
@@ -299,7 +308,6 @@ export class TrafficSimulationEngine implements SimulationEngine {
       );
       
       if (decision.shouldChange && decision.targetLaneId) {
-        console.log(`🚦 Vehicle ${vehicle.id} starting lane change: ${vehicle.laneId} → ${decision.targetLaneId}`);
         this.initiateLaneChange(vehicle, decision.targetLaneId);
         this.laneChangeCooldown.set(vehicle.id, this.currentTime);
       }
