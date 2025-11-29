@@ -3404,7 +3404,7 @@ export default function TrafficSimulationApp() {
           vehicles.length > 0
             ? vehicles.reduce((sum, v) => sum + v.velocity, 0) / vehicles.length
             : 0;
-        const fps = shouldRender && hudAccumulatorRef.current > 0
+        const fps = hudAccumulatorRef.current > 0
           ? frameCountRef.current / hudAccumulatorRef.current
           : hud.fps;
         const laneKm = totalLaneLengthKmRef.current;
