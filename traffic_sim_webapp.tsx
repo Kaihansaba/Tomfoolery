@@ -1958,7 +1958,7 @@ function overpassToNetworkJSON(
       'sidewalk',
       'service',
       'platform',
-    
+      'unclassified'
     ]);
     if (ignoredHighway.has(tags.highway)) continue;
 
