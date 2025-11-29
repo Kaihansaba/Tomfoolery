@@ -2407,6 +2407,25 @@ export default function TrafficSimulationApp() {
     setBackdropTheme(next);
   }, [backdropTheme]);
 
+  const activateAddEdgeTool = useCallback(() => {
+    const selectedNodeId =
+      selectionRef.current?.type === 'node' ? selectionRef.current.id : null;
+
+    setAddToolSelection(selectedNodeId);
+    setAddToolState(() => {
+      const next = startAddNodeAndEdge();
+      if (selectedNodeId) {
+        next.pendingNodeId = selectedNodeId;
+      }
+      return next;
+    });
+    setToolMode('addEdge');
+    setSpawnPointPlacementMode(false);
+    setObstaclePlacementMode(false);
+    setObstacleRemovalMode(false);
+    setTrafficLightPlacementMode(false);
+  }, []);
+
 
   useEffect(() => {
     if (backdropContextRef.current) {
@@ -3931,14 +3950,7 @@ export default function TrafficSimulationApp() {
                   key: 'addEdge',
                   label: 'Add Node + Edge',
                   icon: GitBranchPlus,
-                  action: () => {
-                    setToolMode('addEdge');
-                    setAddToolState(startAddNodeAndEdge());
-                    setSpawnPointPlacementMode(false);
-                    setObstaclePlacementMode(false);
-                    setObstacleRemovalMode(false);
-                    setTrafficLightPlacementMode(false);
-                  },
+                  action: activateAddEdgeTool,
                   },
                   {
                   key: 'subnetwork',
