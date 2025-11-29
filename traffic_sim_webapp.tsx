@@ -2271,6 +2271,7 @@ export default function TrafficSimulationApp() {
   const lastFrameRef = useRef<number>(0);
   const hudAccumulatorRef = useRef<number>(0);
   const frameCountRef = useRef<number>(0);
+  const renderSkipRef = useRef<boolean>(false);
   const isPanningRef = useRef(false);
   const panStartRef = useRef<{ x: number; y: number; offsetX: number; offsetY: number } | null>(
     null
@@ -2327,6 +2328,9 @@ export default function TrafficSimulationApp() {
   const [hoveredTool, setHoveredTool] = useState<{ label: string; top: number } | null>(null);
   const toolsListRef = useRef<HTMLDivElement | null>(null);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
+  const [performanceMode, setPerformanceMode] = useState(false);
+  const prevShowRoadEdgesRef = useRef<boolean>(true);
+  const prevShowBackdropRef = useRef<boolean>(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
   const [obstaclePlacementMode, setObstaclePlacementMode] = useState(false);
@@ -2374,6 +2378,35 @@ export default function TrafficSimulationApp() {
   useEffect(() => {
     requestRedrawRef.current.fn();
   }, [subnetworkSelection, toolMode, addToolState.pendingNodeId]);
+
+  useEffect(() => {
+    const activateAt = 800;
+    const deactivateAt = 650;
+
+    if (!performanceMode && hud.vehicles >= activateAt) {
+      setPerformanceMode(true);
+      prevShowRoadEdgesRef.current = showRoadEdges;
+      prevShowBackdropRef.current = showBackdrop;
+      setShowRoadEdges(false);
+      setShowBackdrop(false);
+      setPanelOpen(false);
+      setToolsOpen(false);
+      return;
+    }
+
+    if (performanceMode && hud.vehicles <= deactivateAt) {
+      setPerformanceMode(false);
+      setShowRoadEdges(prevShowRoadEdgesRef.current);
+      setShowBackdrop(prevShowBackdropRef.current);
+      return;
+    }
+
+    if (performanceMode) {
+      if (showRoadEdges) setShowRoadEdges(false);
+      if (showBackdrop) setShowBackdrop(false);
+    }
+  }, [hud.vehicles, performanceMode, showRoadEdges, showBackdrop]);
+
   const applySelection = useCallback((sel?: Selection) => {
     selectionRef.current = sel;
     setSelection(sel);
@@ -2833,8 +2866,8 @@ export default function TrafficSimulationApp() {
     const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
     const network = sourceNetwork;
     const simConfig: SimulationConfig = {
-      timeStep: 1 / 60,
-      targetFPS: 60,
+      timeStep: 1 / 50, // slightly larger step for lighter compute
+      targetFPS: 45, // lower render cadence to ease GPU/CPU load
       maxVehicles: 600,
       enableCollisionDetection: false,
       spatialIndexType: 'quadtree',
@@ -3128,39 +3161,44 @@ export default function TrafficSimulationApp() {
         trafficLightsRef
       );
       enforceTrafficLights(runtime.engine, trafficLightsRef.current);
-      const roadLayer = renderRoadLayer(view);
-      drawScene(
-        canvas,
-        runtime.engine,
-        view,
-        backdropContextRef.current || undefined,
-        spawnPointsRef.current,
-        runtime.network,
-        selectionRef.current,
-        spawnPointPlacementMode,
-        showRoadEdges,
-        trafficLightsRef.current,
-        roadStyle,
-        simulationMode,
-        toolMode,
-        subnetworkSelection,
-        addToolState.pendingNodeId,
-        roadLayer,
-        hotspotsRef.current
-      );
+      renderSkipRef.current = !renderSkipRef.current;
+      const shouldRender = !renderSkipRef.current; // render every other frame
+      if (shouldRender) {
+        const roadLayer = renderRoadLayer(view);
+        drawScene(
+          canvas,
+          runtime.engine,
+          view,
+          backdropContextRef.current || undefined,
+          spawnPointsRef.current,
+          runtime.network,
+          selectionRef.current,
+          spawnPointPlacementMode,
+          showRoadEdges,
+          trafficLightsRef.current,
+          roadStyle,
+          simulationMode,
+          toolMode,
+          subnetworkSelection,
+          addToolState.pendingNodeId,
+          roadLayer,
+          hotspotsRef.current
+        );
+      }
 
       hudAccumulatorRef.current += delta;
-      frameCountRef.current += 1;
+      if (shouldRender) {
+        frameCountRef.current += 1;
+      }
       if (hudAccumulatorRef.current >= 0.25) {
         const vehicles = Array.from(runtime.engine.vehicles.values());
         const avgSpeed =
           vehicles.length > 0
             ? vehicles.reduce((sum, v) => sum + v.velocity, 0) / vehicles.length
             : 0;
-        const fps =
-          hudAccumulatorRef.current > 0
-            ? frameCountRef.current / hudAccumulatorRef.current
-            : 0;
+        const fps = shouldRender && hudAccumulatorRef.current > 0
+          ? frameCountRef.current / hudAccumulatorRef.current
+          : hud.fps;
 
         setHud({
           time: runtime.engine.currentTime,
