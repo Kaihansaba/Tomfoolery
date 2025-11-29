@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Play,
   Pause,
@@ -15,6 +15,7 @@ import {
   Eye,
   EyeOff,
   Trash,
+  Clock3,
 } from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
@@ -31,6 +32,7 @@ import {
   Vector2D,
   BackdropConfig,
   GeoReference,
+  Hotspot,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
 import testperchance from './testperchance.json';
@@ -133,6 +135,16 @@ type TrafficLight = {
   nextSwitchTime: number; // simulation time when to toggle, if timer > 0
 };
 
+type RoadStyle = {
+  halo: string;
+  haloAlpha: number;
+  haloShadow: string;
+  main: string;
+  mainAlt: string;
+  center: string;
+  centerDash: number[];
+};
+
 type BackdropContext = {
   network: RoadNetworkImpl;
   tileCache: Map<string, HTMLImageElement>;
@@ -141,6 +153,216 @@ type BackdropContext = {
   enabled: boolean;
   theme?: BackdropConfig;
 };
+
+type LanguageCode = 'en' | 'de' | 'es' | 'zh' | 'tr' | 'ar' | 'fa';
+
+type TranslationKey =
+  | 'play'
+  | 'pause'
+  | 'reset'
+  | 'injectOne'
+  | 'injectBulk'
+  | 'populationTarget'
+  | 'off'
+  | 'vehicles'
+  | 'hideMap'
+  | 'showMap'
+  | 'resetZoom'
+  | 'searchPlaceholder'
+  | 'burstInject'
+  | 'spawnPoint'
+  | 'placeObstacle'
+  | 'removeObstacle'
+  | 'trafficLight'
+  | 'addRoads'
+  | 'showEdges'
+  | 'hideEdges'
+  | 'osmTheme'
+  | 'lightTheme'
+  | 'darkTheme';
+
+const TRANSLATIONS: Record<LanguageCode, Record<TranslationKey, string>> = {
+  en: {
+    play: 'Play',
+    pause: 'Pause',
+    reset: 'Reset',
+    injectOne: 'Inject 1',
+    injectBulk: 'Inject',
+    populationTarget: 'Population target',
+    off: 'Off',
+    vehicles: 'vehicles',
+    hideMap: 'Hide map detail',
+    showMap: 'Show map detail',
+    resetZoom: 'Reset zoom',
+    searchPlaceholder: 'Search visible streets',
+    burstInject: 'Burst inject',
+    spawnPoint: 'Spawn Point',
+    placeObstacle: 'Place Obstacle',
+    removeObstacle: 'Remove Obstacle',
+    trafficLight: 'Traffic Light',
+    addRoads: 'Add New Roads',
+    showEdges: 'Show edges',
+    hideEdges: 'Hide edges',
+    osmTheme: 'OSM Standard',
+    lightTheme: 'Light (Carto)',
+    darkTheme: 'Dark (Carto)',
+  },
+  de: {
+    play: 'Start',
+    pause: 'Pause',
+    reset: 'Zurücksetzen',
+    injectOne: '1 einfügen',
+    injectBulk: 'Einfügen',
+    populationTarget: 'Zielbevölkerung',
+    off: 'Aus',
+    vehicles: 'Fahrzeuge',
+    hideMap: 'Kartendetails ausblenden',
+    showMap: 'Kartendetails anzeigen',
+    resetZoom: 'Zoom zurücksetzen',
+    searchPlaceholder: 'Sichtbare Straßen suchen',
+    burstInject: 'Schnell einfügen',
+    spawnPoint: 'Spawn-Punkt',
+    placeObstacle: 'Hindernis platzieren',
+    removeObstacle: 'Hindernis entfernen',
+    trafficLight: 'Ampel',
+    addRoads: 'Neue Straßen',
+    showEdges: 'Kanten anzeigen',
+    hideEdges: 'Kanten ausblenden',
+    osmTheme: 'OSM Standard',
+    lightTheme: 'Hell (Carto)',
+    darkTheme: 'Dunkel (Carto)',
+  },
+  es: {
+    play: 'Reproducir',
+    pause: 'Pausa',
+    reset: 'Reiniciar',
+    injectOne: 'Inyectar 1',
+    injectBulk: 'Inyectar',
+    populationTarget: 'Objetivo de población',
+    off: 'Apagado',
+    vehicles: 'vehículos',
+    hideMap: 'Ocultar mapa',
+    showMap: 'Mostrar mapa',
+    resetZoom: 'Reiniciar zoom',
+    searchPlaceholder: 'Buscar calles visibles',
+    burstInject: 'Inyección rápida',
+    spawnPoint: 'Punto de inicio',
+    placeObstacle: 'Colocar obstáculo',
+    removeObstacle: 'Quitar obstáculo',
+    trafficLight: 'Semáforo',
+    addRoads: 'Añadir calles',
+    showEdges: 'Mostrar bordes',
+    hideEdges: 'Ocultar bordes',
+    osmTheme: 'OSM Estándar',
+    lightTheme: 'Claro (Carto)',
+    darkTheme: 'Oscuro (Carto)',
+  },
+  zh: {
+    play: '开始',
+    pause: '暂停',
+    reset: '重置',
+    injectOne: '增加 1',
+    injectBulk: '批量增加',
+    populationTarget: '目标车辆数',
+    off: '关闭',
+    vehicles: '车辆',
+    hideMap: '隐藏地图细节',
+    showMap: '显示地图细节',
+    resetZoom: '重置缩放',
+    searchPlaceholder: '搜索可见街道',
+    burstInject: '快速注入',
+    spawnPoint: '生成点',
+    placeObstacle: '放置障碍',
+    removeObstacle: '移除障碍',
+    trafficLight: '红绿灯',
+    addRoads: '添加道路',
+    showEdges: '显示边',
+    hideEdges: '隐藏边',
+    osmTheme: 'OSM 标准',
+    lightTheme: '亮色 (Carto)',
+    darkTheme: '暗色 (Carto)',
+  },
+  tr: {
+    play: 'Başlat',
+    pause: 'Duraklat',
+    reset: 'Sıfırla',
+    injectOne: '1 ekle',
+    injectBulk: 'Toplu ekle',
+    populationTarget: 'Nüfus hedefi',
+    off: 'Kapalı',
+    vehicles: 'araç',
+    hideMap: 'Harita detayını gizle',
+    showMap: 'Harita detayını göster',
+    resetZoom: 'Yakınlaştırmayı sıfırla',
+    searchPlaceholder: 'Görünen sokakları ara',
+    burstInject: 'Hızlı ekle',
+    spawnPoint: 'Başlangıç noktası',
+    placeObstacle: 'Engel yerleştir',
+    removeObstacle: 'Engel kaldır',
+    trafficLight: 'Trafik ışığı',
+    addRoads: 'Yeni yollar ekle',
+    showEdges: 'Kenarları göster',
+    hideEdges: 'Kenarları gizle',
+    osmTheme: 'OSM Standart',
+    lightTheme: 'Açık (Carto)',
+    darkTheme: 'Koyu (Carto)',
+  },
+  ar: {
+    play: 'تشغيل',
+    pause: 'إيقاف',
+    reset: 'إعادة ضبط',
+    injectOne: 'إضافة 1',
+    injectBulk: 'إضافة',
+    populationTarget: 'الهدف المروري',
+    off: 'إيقاف',
+    vehicles: 'مركبات',
+    hideMap: 'إخفاء تفاصيل الخريطة',
+    showMap: 'إظهار تفاصيل الخريطة',
+    resetZoom: 'إعادة ضبط التكبير',
+    searchPlaceholder: 'ابحث في الشوارع الظاهرة',
+    burstInject: 'ضخ سريع',
+    spawnPoint: 'نقطة انطلاق',
+    placeObstacle: 'وضع عائق',
+    removeObstacle: 'إزالة عائق',
+    trafficLight: 'إشارة مرور',
+    addRoads: 'إضافة طرق',
+    showEdges: 'إظهار الحواف',
+    hideEdges: 'إخفاء الحواف',
+    osmTheme: 'OSM القياسي',
+    lightTheme: 'فاتح (Carto)',
+    darkTheme: 'داكن (Carto)',
+  },
+  fa: {
+    play: 'شروع',
+    pause: 'توقف',
+    reset: 'ریست',
+    injectOne: 'افزودن ۱',
+    injectBulk: 'افزودن',
+    populationTarget: 'هدف ترافیک',
+    off: 'خاموش',
+    vehicles: 'وسیله',
+    hideMap: 'پنهان کردن جزئیات نقشه',
+    showMap: 'نمایش جزئیات نقشه',
+    resetZoom: 'بازنشانی زوم',
+    searchPlaceholder: 'جستجوی خیابان‌های قابل‌مشاهده',
+    burstInject: 'تزریق سریع',
+    spawnPoint: 'نقطه آغاز',
+    placeObstacle: 'قرار دادن مانع',
+    removeObstacle: 'حذف مانع',
+    trafficLight: 'چراغ راهنمایی',
+    addRoads: 'افزودن جاده',
+    showEdges: 'نمایش لبه‌ها',
+    hideEdges: 'پنهان کردن لبه‌ها',
+    osmTheme: 'استاندارد OSM',
+    lightTheme: 'روشن (Carto)',
+    darkTheme: 'تیره (Carto)',
+  },
+};
+
+function translate(key: TranslationKey, language: LanguageCode): string {
+  const dict = TRANSLATIONS[language] || TRANSLATIONS.en;
+  return dict[key] ?? TRANSLATIONS.en[key];
+}
 
 let vehicleCounter = 0;
 const MIN_ZOOM = 0.00005;
@@ -158,10 +380,68 @@ const UNDISCOVERED_VIEWPORT_THRESHOLD = 0.2; // 20% of visible area
 const OVERPASS_URL = 'https://overpass-api.de/api/interpreter';
 const DEBUG_FETCH_LOGS = true;
 const VIEW_EPS = 1e-6;
+const HOTSPOT_INFLUENCE = 0.6; // probability to assign a hotspot destination on spawn
+const HOTSPOT_REACHED_RADIUS = 30; // meters
+const HOTSPOT_TAGS = {
+  amenity: /^(parking|school|university|college|hospital|clinic|marketplace)$/i,
+  shop: /^(supermarket|mall|department_store)$/i, // narrow shop types
+  leisure: /^(stadium|sports_centre)$/i,
+  office: /^.+$/i,
+  public_transport: /^(station|stop_position)$/i,
+};
+
+function hotspotWeightFromTags(tags: Record<string, string>): number {
+  const amenity = tags['amenity'];
+  const shop = tags['shop'];
+  const leisure = tags['leisure'];
+  const office = tags['office'];
+  const pt = tags['public_transport'];
+
+  if (amenity === 'hospital' || amenity === 'clinic') return 5;
+  if (amenity === 'university' || amenity === 'school' || amenity === 'college') return 4;
+  if (amenity === 'parking' || amenity === 'marketplace') return 3;
+  if (leisure === 'stadium' || leisure === 'sports_centre') return 4;
+  if (pt === 'station') return 4;
+  if (shop && HOTSPOT_TAGS.shop.test(shop)) return 3;
+  if (office) return 0; // ignore generic offices
+  return 0;
+}
+
+function isHotspotCandidate(tags: Record<string, string> = {}): boolean {
+  return !!(
+    (tags['amenity'] && HOTSPOT_TAGS.amenity.test(tags['amenity'])) ||
+    (tags['shop'] && HOTSPOT_TAGS.shop.test(tags['shop'])) ||
+    (tags['leisure'] && HOTSPOT_TAGS.leisure.test(tags['leisure'])) ||
+    (tags['office'] && HOTSPOT_TAGS.office.test(tags['office'])) ||
+    (tags['public_transport'] && HOTSPOT_TAGS.public_transport.test(tags['public_transport']))
+  );
+}
+
+function sampleHotspot(hotspots: Hotspot[]): Hotspot | null {
+  if (!hotspots || hotspots.length === 0) return null;
+  let total = 0;
+  for (const h of hotspots) total += h.weight > 0 ? h.weight : 0;
+  if (total <= 0) return null;
+  let r = Math.random() * total;
+  for (const h of hotspots) {
+    const w = h.weight > 0 ? h.weight : 0;
+    r -= w;
+    if (r <= 0) return h;
+  }
+  return hotspots[hotspots.length - 1];
+}
+
 function buildOverpassQuery(south: number, west: number, north: number, east: number): string {
   // Mirror the standalone overpass.ts format for consistent JSON structure
   return `[out:json][timeout:25];
-way["highway"](${south},${west},${north},${east});
+(
+  way["highway"](${south},${west},${north},${east});
+  node["amenity"~"parking|school|university|college|hospital|clinic|marketplace"](${south},${west},${north},${east});
+  node["shop"](${south},${west},${north},${east});
+  node["leisure"~"stadium|sports_centre"](${south},${west},${north},${east});
+  node["office"](${south},${west},${north},${east});
+  node["public_transport"~"station|stop_position"](${south},${west},${north},${east});
+);
 (._;>;);
 out;`;
 }
@@ -600,6 +880,42 @@ const BACKDROP_THEMES: Record<string, BackdropConfig> = {
   },
 };
 
+function getRoadStyle(theme: keyof typeof BACKDROP_THEMES): RoadStyle {
+  switch (theme) {
+    case 'light':
+      return {
+        halo: '#d1d5db',
+        haloAlpha: 0.78,
+        haloShadow: 'rgba(0,0,0,0.14)',
+        main: '#4b5563',
+        mainAlt: '#374151',
+        center: '#e5e7eb',
+        centerDash: [10, 14],
+      };
+    case 'osm':
+      return {
+        halo: '#0b1220',
+        haloAlpha: 0.82,
+        haloShadow: 'rgba(46,133,243,0.2)',
+        main: '#162234',
+        mainAlt: '#111a2a',
+        center: '#facc15',
+        centerDash: [12, 14],
+      };
+    case 'dark':
+    default:
+      return {
+        halo: '#0a0f1a',
+        haloAlpha: 0.9,
+        haloShadow: 'rgba(255,121,48,0.18)',
+        main: '#111827',
+        mainAlt: '#0f172a',
+        center: 'rgba(255,121,48,0.68)',
+        centerDash: [12, 14],
+      };
+  }
+}
+
 function lonToTile(lon: number, zoom: number): number {
   return ((lon + 180) / 360) * 2 ** zoom;
 }
@@ -662,6 +978,21 @@ function generateUniqueObstacleId(): string {
   return `obs_${obstacleCounter++}`;
 }
 
+function findNearestNodeIdToWorldPoint(network: RoadNetworkImpl, x: number, y: number): string | null {
+  let best: string | null = null;
+  let bestDistSq = Infinity;
+  for (const node of network.nodes.values()) {
+    const dx = node.position.x - x;
+    const dy = node.position.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      best = node.id;
+    }
+  }
+  return best;
+}
+
 function createVehicleState(lane: Lane, position: number, category?: VehicleCategory): VehicleState {
   const type = category ?? pickCategory();
   const params = DEFAULT_VEHICLE_TYPES[type];
@@ -690,6 +1021,8 @@ function createVehicleState(lane: Lane, position: number, category?: VehicleCate
     leaderId: undefined,
     followerIds: [],
     color: params.color,
+    targetHotspotId: null,
+    targetNodeId: null,
   };
 }
 
@@ -715,6 +1048,25 @@ function createObstacleVehicle(lane: Lane, position: number): VehicleState {
     followerIds: [],
     color: '#f97316',
   };
+}
+
+function maybeAssignHotspotDestination(
+  vehicle: VehicleState,
+  network: RoadNetworkImpl,
+  hotspots: Hotspot[]
+): void {
+  if (HOTSPOT_INFLUENCE <= 0) return;
+  if (!hotspots || hotspots.length === 0) return;
+  if (Math.random() > HOTSPOT_INFLUENCE) return;
+
+  const hs = sampleHotspot(hotspots);
+  if (!hs) return;
+
+  vehicle.targetHotspotId = hs.id;
+  vehicle.targetX = hs.x;
+  vehicle.targetY = hs.y;
+  const nodeId = findNearestNodeIdToWorldPoint(network, hs.x, hs.y);
+  vehicle.targetNodeId = nodeId ?? null;
 }
 
 function addObstacleToLane(engine: TrafficSimulationEngine, lane: Lane, position: number): void {
@@ -747,7 +1099,7 @@ function removeObstacleAt(
   return false;
 }
 
-function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey): void {
+function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey, hotspots: Hotspot[] = []): void {
   const drivingLanes = Array.from(engine.network.lanes.values()).filter(
     lane => lane.laneType === 'driving'
   );
@@ -766,6 +1118,7 @@ function seedVehicles(engine: TrafficSimulationEngine, scenario: ScenarioKey): v
       const pos = 5 + i * spacing + Math.random() * Math.min(spacing * 0.35, 10);
       if (pos >= lane.length - 5) continue;
       const vehicle = createVehicleState(lane, pos);
+      maybeAssignHotspotDestination(vehicle, engine.network as RoadNetworkImpl, hotspots);
       engine.addVehicle(vehicle);
     }
   }
@@ -775,7 +1128,8 @@ function drawLane(
   ctx: CanvasRenderingContext2D,
   view: ViewTransform,
   lane: Lane,
-  index: number
+  index: number,
+  style: RoadStyle
 ): void {
   const coords = lane.centerline.map(pt => worldToScreen(view, pt));
   const laneWidth = clamp(lane.width * view.scale, 1, 12);
@@ -793,10 +1147,10 @@ function drawLane(
   ctx.lineJoin = 'round';
 
   // Soft glow halo to make roads pop against the map
-  ctx.strokeStyle = '#0a0f1a';
+  ctx.strokeStyle = style.halo;
   ctx.lineWidth = laneWidth + 3;
-  ctx.globalAlpha = 0.9;
-  ctx.shadowColor = 'rgba(255,121,48,0.18)';
+  ctx.globalAlpha = style.haloAlpha;
+  ctx.shadowColor = style.haloShadow;
   ctx.shadowBlur = 10;
   trace();
   ctx.stroke();
@@ -804,14 +1158,14 @@ function drawLane(
   // Main asphalt fill
   ctx.shadowBlur = 0;
   ctx.globalAlpha = 1;
-  ctx.strokeStyle = index % 2 === 0 ? '#111827' : '#0f172a';
+  ctx.strokeStyle = index % 2 === 0 ? style.main : style.mainAlt;
   ctx.lineWidth = laneWidth;
   trace();
   ctx.stroke();
 
   // Center markings in the brand orange
-  ctx.strokeStyle = 'rgba(255,121,48,0.68)';
-  ctx.setLineDash([12, 14]);
+  ctx.strokeStyle = style.center;
+  ctx.setLineDash(style.centerDash);
   ctx.lineWidth = Math.max(1, laneWidth * 0.15);
   trace();
   ctx.stroke();
@@ -1200,11 +1554,13 @@ function drawScene(
   highlightSpawnNodes: boolean = false,
   showRoadEdges: boolean = true,
   trafficLights: TrafficLight[] = [],
+  roadStyle: RoadStyle = getRoadStyle('dark'),
   simulationMode: 'micro' | 'macro' = 'micro',
   toolMode: 'none' | 'addEdge' | 'subnetwork' | 'delete' = 'none',
   subnetworkSelection: Set<string> = new Set(),
   pendingAddNodeId?: string,
-  roadLayer?: HTMLCanvasElement | null
+  roadLayer?: HTMLCanvasElement | null,
+  hotspots: Hotspot[] = []
 ): void {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
@@ -1245,7 +1601,7 @@ function drawScene(
       if (!boundsIntersect(laneBounds, visibleBounds)) continue;
       ctx.save();
       ctx.globalAlpha = fadeAlpha < 1 ? fadeAlpha : 1;
-      drawLane(ctx, view, lane, laneIndex++);
+      drawLane(ctx, view, lane, laneIndex++, roadStyle);
       ctx.restore();
     }
   }
@@ -1309,6 +1665,23 @@ function drawScene(
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  // Hotspots overlay (debug)
+  if (hotspots.length > 0) {
+    ctx.save();
+    for (const h of hotspots) {
+      const screen = worldToScreen(view, { x: h.x, y: h.y });
+      ctx.beginPath();
+      const r = Math.min(8, 3 + h.weight);
+      ctx.fillStyle = 'rgba(255,165,0,0.8)';
+      ctx.strokeStyle = 'rgba(255,140,0,0.9)';
+      ctx.lineWidth = 1.5;
+      ctx.arc(screen.x, screen.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Subnetwork selection highlights
@@ -1410,6 +1783,24 @@ function drawScene(
       ctx.moveTo(pts[0].x, pts[0].y);
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
       ctx.stroke();
+    }
+
+    // Highlight selected start node for add-edge tool
+    if (addToolSelection) {
+      const node = network.getNode(addToolSelection);
+      if (node) {
+        const screen = worldToScreen(view, node.position);
+        ctx.save();
+        ctx.translate(screen.x, screen.y);
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(168,85,247,0.85)';
+        ctx.strokeStyle = '#a855f7';
+        ctx.lineWidth = 3;
+        ctx.arc(0, 0, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
     }
     ctx.restore();
   }
@@ -1741,7 +2132,9 @@ async function fetchChunkAndMerge(
   pendingChunks: Set<string>,
   onRedraw: () => void,
   markRoadsDirty?: () => void,
-  addTrafficLights?: (lights: TrafficLight[]) => void
+  addTrafficLights?: (lights: TrafficLight[]) => void,
+  hotspots?: Hotspot[],
+  hotspotIds?: Set<string>
 ) {
   const geoRef = runtime.network.geoReference;
   if (!geoRef) return;
@@ -1775,6 +2168,49 @@ async function fetchChunkAndMerge(
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
+    if (hotspots && hotspotIds) {
+      for (const el of data.elements) {
+        if (el.type !== 'node') continue;
+        const node = el as OSMNode;
+        const tags = node.tags || {};
+        if (!isHotspotCandidate(tags)) continue;
+        const id = String(node.id);
+        if (hotspotIds.has(id)) continue;
+        const world = geoToWorld(node.lat, node.lon, geoRef);
+        const hs: Hotspot = {
+          id,
+          lat: node.lat,
+          lon: node.lon,
+          x: world.x,
+          y: world.y,
+          weight: hotspotWeightFromTags(tags),
+          tags,
+        };
+        hotspotIds.add(id);
+        hotspots.push(hs);
+      }
+      // Deduplicate densely clustered hotspots (e.g., shop lots) within 120m, keep highest weight
+      const filtered: Hotspot[] = [];
+      for (const h of hotspots) {
+        let merged = false;
+        for (let i = 0; i < filtered.length; i++) {
+          const f = filtered[i];
+          const dx = h.x - f.x;
+          const dy = h.y - f.y;
+          if (dx * dx + dy * dy < 120 * 120) {
+            if (h.weight > f.weight) {
+              filtered[i] = h;
+            }
+            merged = true;
+            break;
+          }
+        }
+        if (!merged && h.weight > 0) {
+          filtered.push(h);
+        }
+      }
+      hotspots.splice(0, hotspots.length, ...filtered);
+    }
     if (addTrafficLights) {
       const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
       if (extracted.length > 0) addTrafficLights(extracted);
@@ -1819,6 +2255,8 @@ export default function TrafficSimulationApp() {
   const chunkCacheRef = useRef<Set<string>>(new Set());
   const pendingChunkFetchRef = useRef<Set<string>>(new Set());
   const lastChunkFetchRef = useRef<number>(0);
+  const hotspotsRef = useRef<Hotspot[]>([]);
+  const hotspotIdsRef = useRef<Set<string>>(new Set());
   const roadsLayerRef = useRef<HTMLCanvasElement | null>(null);
   const roadsDirtyRef = useRef<boolean>(true);
   const lastRoadViewRef = useRef<ViewTransform | null>(null);
@@ -1828,11 +2266,22 @@ export default function TrafficSimulationApp() {
   const [showBackdrop, setShowBackdrop] = useState(true);
   const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('osm');
   const [zoomLevel, setZoomLevel] = useState(1);
+  const roadStyle = useMemo(() => getRoadStyle(backdropTheme), [backdropTheme]);
+  const [language, setLanguage] = useState<LanguageCode>('en');
   const [bulkCount, setBulkCount] = useState(10);
   const [inputMode, setInputMode] = useState<'mouse' | 'trackpad'>('trackpad');
   const [trafficLevel, setTrafficLevel] = useState<TrafficLevel>('mid');
   const requestRedrawRef = useRef<{ fn: () => void }>({ fn: () => {} });
   const redrawRafIdRef = useRef<number | undefined>(undefined);
+  const translateText = useCallback((key: TranslationKey) => translate(key, language), [language]);
+  const themeLabel = useMemo(() => {
+    const map: Record<keyof typeof BACKDROP_THEMES, TranslationKey> = {
+      osm: 'osmTheme',
+      light: 'lightTheme',
+      dark: 'darkTheme',
+    };
+    return translateText(map[backdropTheme]);
+  }, [backdropTheme, translateText]);
 
   const [scenario, setScenario] = useState<ScenarioKey>('heilbronn_perchance');
   const [isRunning, setIsRunning] = useState(true);
@@ -1847,6 +2296,8 @@ export default function TrafficSimulationApp() {
   const [statModeIndex, setStatModeIndex] = useState(0);
   const [panelOpen, setPanelOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [hoveredTool, setHoveredTool] = useState<{ label: string; top: number } | null>(null);
+  const toolsListRef = useRef<HTMLDivElement | null>(null);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
@@ -1855,6 +2306,7 @@ export default function TrafficSimulationApp() {
   const [speedSignPlacementMode, setSpeedSignPlacementMode] = useState<number | null>(null);
   const [trafficLightPlacementMode, setTrafficLightPlacementMode] = useState(false);
   const [trafficLightTimer, setTrafficLightTimer] = useState(0);
+  const [lightTimerOpen, setLightTimerOpen] = useState(false);
   const [trafficLights, setTrafficLights] = useState<TrafficLight[]>([]);
   const trafficLightsRef = useRef<TrafficLight[]>([]);
   const vehicleTargetRef = useRef<number>(VEHICLE_TARGETS.off);
@@ -1867,6 +2319,7 @@ export default function TrafficSimulationApp() {
   const [simulationMode, setSimulationMode] = useState<'micro' | 'macro'>('micro');
   const [toolMode, setToolMode] = useState<'none' | 'addEdge' | 'subnetwork' | 'delete'>('none');
   const [addToolState, setAddToolState] = useState<AddNodeAndEdgeState>(() => startAddNodeAndEdge());
+  const [addToolSelection, setAddToolSelection] = useState<string | null>(null);
   const [subnetworkSelection, setSubnetworkSelection] = useState<Set<string>>(new Set());
   const customNetworkRef = useRef<NetworkJSON | null>(null);
   const [customNetworkName, setCustomNetworkName] = useState<string>('Uploaded map');
@@ -1876,6 +2329,19 @@ export default function TrafficSimulationApp() {
   const lastSuggestionUpdateRef = useRef(0);
   const swipeStartRef = useRef<number | null>(null);
   const pendingIndexRef = useRef<Promise<any> | null>(null);
+  const laneCount = runtimeRef.current?.network.lanes.size ?? 0;
+  const avgSpeedKmh = hud.avgSpeed * 3.6;
+  const totalLaneLengthKm = (() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return undefined;
+    let sum = 0;
+    for (const lane of runtime.network.lanes.values()) {
+      sum += lane.length || 0;
+    }
+    return sum > 0 ? sum / 1000 : 0;
+  })();
+  const trafficDensityPerKm =
+    totalLaneLengthKm && totalLaneLengthKm > 0 ? hud.vehicles / totalLaneLengthKm : undefined;
 
   useEffect(() => {
     requestRedrawRef.current.fn();
@@ -1899,14 +2365,16 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
     }
-  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   const updateStreetSuggestions = useCallback(() => {
     const runtime = runtimeRef.current;
@@ -1934,6 +2402,13 @@ export default function TrafficSimulationApp() {
     setStreetSuggestions(Array.from(names).sort());
   }, []);
 
+  const cycleBackdropTheme = useCallback(() => {
+    const themes: (keyof typeof BACKDROP_THEMES)[] = ['dark', 'light', 'osm'];
+    const idx = themes.indexOf(backdropTheme);
+    const next = themes[(idx + 1) % themes.length];
+    setBackdropTheme(next);
+  }, [backdropTheme]);
+
 
   useEffect(() => {
     if (backdropContextRef.current) {
@@ -1947,6 +2422,7 @@ export default function TrafficSimulationApp() {
         applySelection(undefined);
         setToolMode('none');
         setAddToolState(startAddNodeAndEdge());
+        setAddToolSelection(null);
         setSubnetworkSelection(new Set());
       }
     };
@@ -2075,7 +2551,9 @@ export default function TrafficSimulationApp() {
             trafficLightsRef.current = merged;
             return merged;
           });
-        }
+        },
+        hotspotsRef.current,
+        hotspotIdsRef.current
       );
     },
     [scenario, showBackdrop]
@@ -2120,7 +2598,7 @@ export default function TrafficSimulationApp() {
           if (!boundsIntersect(laneBounds, visibleBounds)) continue;
           ctx.save();
           ctx.globalAlpha = fadeAlpha < 1 ? fadeAlpha : 1;
-          drawLane(ctx, view, lane, laneIndex++);
+          drawLane(ctx, view, lane, laneIndex++, roadStyle);
           ctx.restore();
         }
 
@@ -2130,7 +2608,7 @@ export default function TrafficSimulationApp() {
 
       return layer;
     },
-    [showRoadEdges]
+    [showRoadEdges, roadStyle]
   );
 
   const requestRedraw = useCallback(() => {
@@ -2159,17 +2637,19 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges,
           trafficLightsRef.current,
+          roadStyle,
           simulationMode,
           toolMode,
           subnetworkSelection,
           addToolState.pendingNodeId,
-          roadLayer
+          roadLayer,
+          hotspotsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(view);
       }
     });
-  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, updateStreetSuggestions, updateDynamicChunks, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [spawnPointPlacementMode, showRoadEdges, simulationMode, updateStreetSuggestions, updateDynamicChunks, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   // Keep the ref in sync immediately after requestRedraw is defined
   requestRedrawRef.current.fn = requestRedraw;
@@ -2234,16 +2714,19 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges,
           trafficLightsRef.current,
+          roadStyle,
           simulationMode,
           toolMode,
           subnetworkSelection,
-          addToolState.pendingNodeId
+          addToolState.pendingNodeId,
+          renderRoadLayer(viewRef.current),
+          hotspotsRef.current
         );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current);
       }
     },
-    [updateStreetSuggestions, updateDynamicChunks, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]
+    [updateStreetSuggestions, updateDynamicChunks, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]
   );
 
   const initialize = (options?: { seedVehicles?: boolean }) => {
@@ -2259,6 +2742,8 @@ export default function TrafficSimulationApp() {
     spawnPointsRef.current = [];
     setTrafficLights([]);
     trafficLightsRef.current = [];
+    hotspotsRef.current = [];
+    hotspotIdsRef.current.clear();
     vehicleTargetRef.current = vehicleTarget;
 
     const shouldSeedVehicles = options?.seedVehicles ?? lastInitSeedRef.current;
@@ -2348,11 +2833,13 @@ export default function TrafficSimulationApp() {
       spawnPointPlacementMode,
       showRoadEdges,
       trafficLightsRef.current,
+      roadStyle,
       simulationMode,
       toolMode,
       subnetworkSelection,
       addToolState.pendingNodeId,
-      renderRoadLayer(viewRef.current)
+      renderRoadLayer(viewRef.current),
+      hotspotsRef.current
     );
     updateStreetSuggestions();
     updateDynamicChunks(viewRef.current);
@@ -2367,7 +2854,7 @@ export default function TrafficSimulationApp() {
 
     if (shouldSeedVehicles && sourceNetwork.lanes.size > 0) {
       setTimeout(() => {
-        seedVehicles(engine, scenario);
+        seedVehicles(engine, scenario, hotspotsRef.current);
         drawScene(
           canvas,
           engine,
@@ -2379,12 +2866,14 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges,
           trafficLightsRef.current,
-          simulationMode,
-          toolMode,
-          subnetworkSelection,
-          addToolState.pendingNodeId,
-          renderRoadLayer(viewRef.current as ViewTransform)
-        );
+          roadStyle,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId,
+        renderRoadLayer(viewRef.current as ViewTransform),
+        hotspotsRef.current
+      );
         updateStreetSuggestions();
         updateDynamicChunks(viewRef.current as ViewTransform);
         setHud(h => ({ ...h, vehicles: engine.vehicles.size }));
@@ -2489,15 +2978,17 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
       updateDynamicChunks(view);
     }
-  }, [spawnPoints, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [spawnPoints, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2539,11 +3030,13 @@ export default function TrafficSimulationApp() {
           spawnPointPlacementMode,
           showRoadEdges,
           trafficLightsRef.current,
+          roadStyle,
           simulationMode,
           toolMode,
           subnetworkSelection,
           addToolState.pendingNodeId,
-          roadLayer
+          roadLayer,
+          hotspotsRef.current
         );
         setZoomLevel(viewRef.current.scale);
         updateDynamicChunks(viewRef.current);
@@ -2595,11 +3088,13 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
 
       hudAccumulatorRef.current += delta;
@@ -2647,7 +3142,7 @@ export default function TrafficSimulationApp() {
       isRunningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2714,11 +3209,13 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        renderRoadLayer(view)
+        renderRoadLayer(view),
+        hotspotsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2727,7 +3224,7 @@ export default function TrafficSimulationApp() {
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', handleWheel);
-  }, [canvasReady, inputMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [canvasReady, inputMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2782,11 +3279,13 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
         addToolState.pendingNodeId,
-        roadLayer
+        roadLayer,
+        hotspotsRef.current
       );
       updateStreetSuggestions();
       updateDynamicChunks(viewRef.current);
@@ -2816,7 +3315,7 @@ export default function TrafficSimulationApp() {
       canvas.removeEventListener('pointerleave', endPan);
       canvas.removeEventListener('pointercancel', endPan);
     };
-  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId]);
+  }, [canvasReady, spawnPointPlacementMode, obstaclePlacementMode, obstacleRemovalMode, trafficLightPlacementMode, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -3063,6 +3562,9 @@ export default function TrafficSimulationApp() {
           requestRedrawRef.current.fn();
           if (res.newEdge) {
             setToolMode('none');
+            setAddToolSelection(null);
+          } else if (res.newNode) {
+            setAddToolSelection(res.newNode.id);
           }
         }
         return;
@@ -3149,6 +3651,7 @@ export default function TrafficSimulationApp() {
       const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 6);
       if (!hasSpace) return false;
       const vehicle = createVehicleState(lane, pos);
+      maybeAssignHotspotDestination(vehicle, runtime.network, hotspotsRef.current);
       runtime.engine.addVehicle(vehicle);
       return true;
     };
@@ -3238,6 +3741,10 @@ export default function TrafficSimulationApp() {
   const selectedStats =
     selection?.type === 'edge' && runtimeForSelection
       ? computeEdgeStats(runtimeForSelection.network, selection.id)
+      : undefined;
+  const selectedSpeedLimitKmh =
+    selection?.type === 'edge' && selectedStats?.speedLimit
+      ? selectedStats.speedLimit * 3.6
       : undefined;
   const selectedJSON = selection
     ? JSON.stringify(selection.type === 'node' ? selectedNode : selectedEdge, null, 2)
@@ -3336,7 +3843,7 @@ export default function TrafficSimulationApp() {
     swipeStartRef.current = null;
   };
 
-  const overlayRight = selection ? '22rem' : '1rem';
+  const overlayRight = '1rem';
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#050505] text-white">
@@ -3356,7 +3863,6 @@ export default function TrafficSimulationApp() {
         >
           <Sparkles className="text-black drop-shadow" size={22} />
         </button>
-
         <div className="relative">
           <button
             onClick={() => setToolsOpen(open => !open)}
@@ -3372,144 +3878,181 @@ export default function TrafficSimulationApp() {
                 : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'
             }`}
           >
-            <div className="rounded-3xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] overflow-hidden">
-              {[
+              <div className="rounded-2xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] px-2 py-2 w-16 h-48 overflow-visible relative">
+                <div
+                  ref={toolsListRef}
+                  className="relative flex flex-col gap-2 max-h-40 overflow-y-auto pr-1"
+                  onMouseLeave={() => setHoveredTool(null)}
+                >
+                {[
                 {
                   key: 'spawn',
-                  label: 'Spawn Point',
+                  label: translateText('spawnPoint'),
                   icon: MapPin,
                   action: () => {
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(true);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(false);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'place',
-                  label: 'Place Obstacle',
+                  label: translateText('placeObstacle'),
                   icon: Shield,
                   action: () => {
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstacleRemovalMode(false);
                     setObstaclePlacementMode(true);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'remove',
-                  label: 'Remove Obstacle',
+                  label: translateText('removeObstacle'),
                   icon: Eraser,
                   action: () => {
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(true);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'light',
-                  label: 'Traffic Light',
+                  label: translateText('trafficLight'),
                   icon: TrafficCone,
                   action: () => {
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(false);
                     setTrafficLightPlacementMode(true);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'addEdge',
                   label: 'Add Node + Edge',
                   icon: GitBranchPlus,
                   action: () => {
                     setToolMode('addEdge');
                     setAddToolState(startAddNodeAndEdge());
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(false);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'subnetwork',
                   label: 'Select Subnetwork',
                   icon: MapPin,
                   action: () => {
                     setToolMode('subnetwork');
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(false);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
+                  },
+                  {
                   key: 'delete',
                   label: 'Delete Nodes/Edges',
                   icon: Trash,
                   action: () => {
                     setToolMode('delete');
-                    setPanelOpen(true);
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
                     setObstacleRemovalMode(false);
                     setTrafficLightPlacementMode(false);
                   },
-                },
-                {
-                  key: 'roads',
-                  label: 'Add New Roads',
-                  icon: GitBranchPlus,
-                  action: () => setShowBackdrop(true),
-                },
-                {
-                  key: 'edges',
-                  label: showRoadEdges ? 'Hide edges' : 'Show edges',
-                  icon: showRoadEdges ? EyeOff : Eye,
-                  action: () => setShowRoadEdges(v => !v),
-                },
-              ].map((tool, idx) => {
-                const Icon = tool.icon;
-                return (
-                  <button
-                    key={tool.key}
-                    onClick={() => {
-                      tool.action();
-                      setToolsOpen(false);
-                    }}
-                    className={`flex items-center gap-3 px-4 py-3 w-full text-left text-sm hover:bg-orange-500/10 transition ${
-                      idx !== 0 ? 'border-t border-orange-500/15' : ''
-                    } ${toolMode === tool.key ? 'bg-orange-500/15' : ''}`}
+                  },
+                  {
+                    key: 'edges',
+                    label: showRoadEdges ? translateText('hideEdges') : translateText('showEdges'),
+                    icon: showRoadEdges ? EyeOff : Eye,
+                    action: () => setShowRoadEdges(v => !v),
+                  },
+                ].map((tool, idx) => {
+                  const Icon = tool.icon;
+                  return (
+                    <button
+                      key={tool.key}
+                      onClick={() => {
+                        tool.action();
+                        setToolsOpen(false);
+                      }}
+                      onMouseEnter={e => {
+                        const target = e.currentTarget;
+                        const scrollTop = toolsListRef.current?.scrollTop ?? 0;
+                        setHoveredTool({
+                          label: tool.label,
+                          top: target.offsetTop + target.offsetHeight / 2 - scrollTop,
+                        });
+                      }}
+                      onMouseLeave={() => setHoveredTool(null)}
+                    className={`group relative flex items-center justify-center w-11 h-11 rounded-xl hover:bg-orange-500/10 transition ${
+                      toolMode === tool.key ? 'bg-orange-500/15' : ''
+                    }`}
                   >
                     <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
-                      <Icon size={16} className="text-orange-200" />
+                      <Icon size={18} className="text-orange-200" />
                     </div>
-                    <span className="text-white">{tool.label}</span>
                   </button>
                 );
               })}
-              <div className="border-t border-orange-500/15 bg-black/70 px-4 py-3 text-xs text-orange-100/80 flex items-center gap-2">
-                <span>Light timer (s)</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={300}
-                  value={trafficLightTimer}
-                  onChange={e =>
-                    setTrafficLightTimer(
-                      Math.max(0, Math.min(300, Number(e.target.value) || 0))
-                    )
-                  }
-                  className="w-16 rounded bg-slate-900 border border-orange-500/40 px-2 py-1 text-right text-white"
-                />
-                <span className="text-orange-300 text-[10px]">(0 = manual)</span>
+                <button
+                  onClick={() => setLightTimerOpen(o => !o)}
+                  className={`group relative flex items-center justify-center w-11 h-11 rounded-xl hover:bg-orange-500/10 transition ${
+                    lightTimerOpen ? 'bg-orange-500/15' : ''
+                  }`}
+                  onMouseEnter={e => {
+                    const target = e.currentTarget;
+                    const scrollTop = toolsListRef.current?.scrollTop ?? 0;
+                    setHoveredTool({
+                      label: `Light timer (${trafficLightTimer || 0}s)`,
+                      top: target.offsetTop + target.offsetHeight / 2 - scrollTop,
+                    });
+                  }}
+                  onMouseLeave={() => setHoveredTool(null)}
+                >
+                  <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
+                    <Clock3 size={18} className="text-orange-200" />
+                  </div>
+                </button>
               </div>
+              {hoveredTool && (
+                <div
+                  className="pointer-events-none absolute right-full mr-3 z-50 min-w-[140px] rounded-xl bg-black/85 border border-orange-500/40 px-3 py-2 text-sm text-white shadow-[0_10px_30px_rgba(0,0,0,0.55)] transition-all duration-150 ease-out origin-right"
+                  style={{
+                    top: hoveredTool.top + 4,
+                    transform: 'translateY(-50%) translateX(6px)',
+                    opacity: 1,
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-orange-400 animate-pulse" />
+                    <span className="text-sm">{hoveredTool.label}</span>
+                  </div>
+                </div>
+              )}
+              {lightTimerOpen && (
+                <div className="mt-2 rounded-xl border border-orange-500/25 bg-black/80 px-3 py-2 text-xs text-orange-100/80 flex items-center gap-2">
+                  <Clock3 size={14} className="text-orange-200" />
+                  <input
+                    type="number"
+                    min={0}
+                    max={300}
+                    value={trafficLightTimer}
+                    onChange={e =>
+                      setTrafficLightTimer(
+                        Math.max(0, Math.min(300, Number(e.target.value) || 0))
+                      )
+                    }
+                    className="w-16 rounded bg-slate-900 border border-orange-500/40 px-2 py-1 text-right text-white"
+                  />
+                  <span className="text-orange-300 text-[10px]">(0 = manual)</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -3564,35 +4107,35 @@ export default function TrafficSimulationApp() {
             </div>
 
             <div className="mt-6 space-y-3">
-              <div className="flex items-center gap-2 rounded-2xl bg-[#0b0b0f] border border-orange-500/30 px-3 py-2 shadow-inner">
-                <Search size={16} className="text-orange-300" />
-                <input
-                  value={streetQuery}
-                  onChange={e => setStreetQuery(e.target.value)}
-                  list="street-suggestions"
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      searchStreetInView();
-                    }
-                  }}
-                  placeholder="Search visible streets"
-                  className="flex-1 bg-transparent outline-none text-sm placeholder:text-orange-100/50"
-                />
-              </div>
+                  <div className="flex items-center gap-2 rounded-2xl bg-[#0b0b0f] border border-orange-500/30 px-3 py-2 shadow-inner">
+                    <Search size={16} className="text-orange-300" />
+                    <input
+                      value={streetQuery}
+                      onChange={e => setStreetQuery(e.target.value)}
+                      list="street-suggestions"
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          searchStreetInView();
+                        }
+                      }}
+                      placeholder={translateText('searchPlaceholder')}
+                      className="flex-1 bg-transparent outline-none text-sm placeholder:text-orange-100/50"
+                    />
+                  </div>
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => setIsRunning(prev => !prev)}
                   className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
                 >
                   {isRunning ? <Pause size={14} /> : <Play size={14} />}
-                  <span>{isRunning ? 'Pause' : 'Play'}</span>
+                  <span>{isRunning ? translateText('pause') : translateText('play')}</span>
                 </button>
                 <button
                   onClick={handleReset}
                   className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm font-semibold hover:border-orange-400 transition"
                 >
-                  Reset
+                  {translateText('reset')}
                 </button>
               </div>
               <datalist id="street-suggestions">
@@ -3602,39 +4145,45 @@ export default function TrafficSimulationApp() {
               </datalist>
               {panelOpen && (
                 <>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
-                      <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
-                        Traffic
-                      </div>
-                      <div className="text-lg font-semibold">{hud.vehicles}</div>
+                  <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-2">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Statistics</span>
                     </div>
-                    <div className="rounded-2xl bg-white/5 border border-orange-500/20 px-3 py-2">
-                      <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
-                        Speed
-                      </div>
-                      <div className="text-lg font-semibold">
-                        {(hud.avgSpeed * 3.6).toFixed(1)} km/h
-                      </div>
-                    </div>
-                  </div>
-                  <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-3 space-y-2">
-                    <div className="flex items-center justify-between text-[11px] uppercase tracking-[0.25em] text-orange-200/80">
-                      <span>Stats</span>
-                      <button
-                        onClick={handleModeCycle}
-                        className="text-orange-50 text-xs rounded-full px-3 py-1 border border-orange-500/30 hover:border-orange-400 transition"
-                      >
-                        {statModes[statModeIndex]}
-                      </button>
-                    </div>
-                    <div className="space-y-1 transition-all duration-300">
-                      {statsForMode.map(item => (
-                        <div key={item.label} className="flex justify-between text-sm">
-                          <span className="text-orange-100/70">{item.label}</span>
-                          <span className="font-mono text-white">{item.value}</span>
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
+                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                          Active vehicles
                         </div>
-                      ))}
+                        <div className="text-lg font-semibold">{hud.vehicles}</div>
+                      </div>
+                      <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
+                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                          Traffic density
+                        </div>
+                        <div className="text-lg font-semibold">
+                          {trafficDensityPerKm !== undefined
+                            ? `${trafficDensityPerKm.toFixed(1)} veh/km`
+                            : '–'}
+                        </div>
+                      </div>
+                      <div
+                        className={`rounded-2xl px-3 py-2 border ${
+                          selectedSpeedLimitKmh
+                            ? avgSpeedKmh < selectedSpeedLimitKmh * 0.5
+                              ? 'bg-red-500/15 border-red-400/40'
+                              : avgSpeedKmh < selectedSpeedLimitKmh * 0.8
+                              ? 'bg-amber-500/15 border-amber-400/40'
+                              : 'bg-emerald-500/15 border-emerald-400/40'
+                            : 'bg-black/60 border-orange-500/20'
+                        }`}
+                      >
+                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                          Average vehicle speed
+                        </div>
+                        <div className="text-lg font-semibold">
+                          {avgSpeedKmh.toFixed(1)} km/h
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </>
@@ -3648,231 +4197,140 @@ export default function TrafficSimulationApp() {
                   : 'opacity-0 -translate-y-2 pointer-events-none h-0 overflow-hidden'
               }`}
             >
-              <div className="grid sm:grid-cols-2 gap-3">
-                {toolMode === 'addEdge' && (
-                  <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Add Node + Edge</div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <span>Lanes</span>
+              <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-3">
+                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                    <span>Controls</span>
+                  </div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
+                    <select
+                      value={scenario}
+                      onChange={e => setScenario(e.target.value as ScenarioKey)}
+                      className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                    >
+                      <option value="simple_highway">Highway with ramps</option>
+                      <option value="urban_intersection">Signalized intersection</option>
+                      <option value="roundabout">Four-arm roundabout</option>
+                      <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+                      <option value="test_perchance">Test Perchance (full)</option>
+                      {customNetworkRef.current && (
+                        <option value="uploaded_custom">{customNetworkName}</option>
+                      )}
+                    </select>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                      >
+                        Import JSON
+                      </button>
                       <input
-                        type="number"
-                        min={1}
-                        max={4}
-                        value={addToolState.lanes}
-                        onChange={e =>
-                          setAddToolState(s => ({
-                            ...s,
-                            lanes: Math.max(1, Math.min(4, Number(e.target.value) || 1)),
-                          }))
-                        }
-                        className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-2 py-1 text-sm"
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".json,application/json"
+                        className="hidden"
+                        onChange={async e => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          try {
+                            const text = await file.text();
+                            const parsed = JSON.parse(text);
+                            const coerced = coerceNetworkJSON(parsed);
+                            if (!coerced) {
+                              console.warn('Uploaded file is not a valid network JSON');
+                              return;
+                            }
+                            customNetworkRef.current = coerced;
+                            setCustomNetworkName(file.name || 'Uploaded map');
+                            setScenario('uploaded_custom');
+                            initialize({ seedVehicles: false });
+                          } catch (err) {
+                            console.error('Failed to load JSON', err);
+                          } finally {
+                            e.target.value = '';
+                          }
+                        }}
                       />
                     </div>
-                    <div className="flex gap-2 text-xs">
-                      {(['forward', 'backward', 'bidirectional'] as const).map(dir => (
-                        <button
-                          key={dir}
-                          onClick={() => setAddToolState(s => ({ ...s, direction: dir }))}
-                          className={`flex-1 rounded-xl px-2 py-1 border transition ${
-                            addToolState.direction === dir
-                              ? 'border-orange-400 bg-orange-500/20'
-                              : 'border-orange-500/25 bg-black/60'
-                          }`}
-                        >
-                          {dir}
-                        </button>
-                      ))}
+                  </div>
+                  <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Simulation speed</span>
+                      <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
+                        className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
+                      >
+                        <Minus size={14} />
+                      </button>
+                      <input
+                        type="range"
+                        min={0.25}
+                        max={4}
+                        step={0.05}
+                        value={timeScale}
+                        onChange={e => setTimeScale(parseFloat(e.target.value))}
+                        className="flex-1 min-w-0 accent-orange-500"
+                      />
+                      <button
+                        onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
+                        className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
+                      >
+                        <Plus size={14} />
+                      </button>
                     </div>
                   </div>
-                )}
-                {toolMode === 'subnetwork' && (
-                  <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Subnetwork</div>
-                    <p className="text-[11px] text-orange-100/70">Click nodes to toggle selection. Internal edges highlight.</p>
-                    <button
-                      onClick={() => {
-                        const runtime = runtimeRef.current;
-                        if (!runtime) return;
-                        const result = extractSubnetwork(
-                          runtime.network.nodes,
-                          runtime.network.edges,
-                          subnetworkSelection
-                        );
-                        const blob = new Blob([JSON.stringify(result, null, 2)], {
-                          type: 'application/json',
-                        });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = 'subsimulation.json';
-                        a.click();
-                        URL.revokeObjectURL(url);
-                      }}
-                      className="w-full rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
-                    >
-                      Extract Sub-Simulation
-                    </button>
-                  </div>
-                )}
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
-                  <select
-                    value={scenario}
-                    onChange={e => setScenario(e.target.value as ScenarioKey)}
-                    className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
-                  >
-                    <option value="simple_highway">Highway with ramps</option>
-                    <option value="urban_intersection">Signalized intersection</option>
-                    <option value="roundabout">Four-arm roundabout</option>
-                    <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
-                    <option value="test_perchance">Test Perchance (full)</option>
-                    {customNetworkRef.current && (
-                      <option value="uploaded_custom">{customNetworkName}</option>
-                    )}
-                  </select>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => fileInputRef.current?.click()}
-                      className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
-                    >
-                      Import JSON
-                    </button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".json,application/json"
-                      className="hidden"
-                      onChange={async e => {
-                        const file = e.target.files?.[0];
-                        if (!file) return;
-                        try {
-                          const text = await file.text();
-                          const parsed = JSON.parse(text);
-                          const coerced = coerceNetworkJSON(parsed);
-                          if (!coerced) {
-                            console.warn('Uploaded file is not a valid network JSON');
-                            return;
-                          }
-                          customNetworkRef.current = coerced;
-                          setCustomNetworkName(file.name || 'Uploaded map');
-                          setScenario('uploaded_custom');
-                          initialize({ seedVehicles: false });
-                        } catch (err) {
-                          console.error('Failed to load JSON', err);
-                        } finally {
-                          e.target.value = '';
-                        }
-                      }}
-                    />
-                  </div>
-                  <p className="text-[11px] text-orange-100/70">
-                    Swiping up reveals advanced tuning without leaving the viewport.
-                  </p>
                 </div>
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
-                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                    <span>Simulation speed</span>
-                    <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
-                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
-                    >
-                      <Minus size={14} />
-                    </button>
-                    <input
-                      type="range"
-                      min={0.25}
-                      max={4}
-                      step={0.05}
-                      value={timeScale}
-                      onChange={e => setTimeScale(parseFloat(e.target.value))}
-                      className="flex-1 accent-orange-500"
-                    />
-                    <button
-                      onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
-                      className="p-2 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition"
-                    >
-                      <Plus size={14} />
-                    </button>
-                  </div>
-                  <div className="flex items-center justify-between text-xs text-orange-100/80">
-                    <span>Input</span>
-                    <button
-                      onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
-                      className="px-3 py-2 rounded-xl bg-orange-500/15 border border-orange-500/30 text-sm hover:border-orange-400 transition"
-                    >
-                      {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
-                    </button>
-                  </div>
-                </div>
-              </div>
 
-              <div className="grid sm:grid-cols-1 gap-3">
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => applyTrafficLevel(trafficLevel)}
-                      className="flex-1 min-w-[160px] rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-4 py-3 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
-                    >
-                      Burst inject
-                    </button>
-                    <button
-                      onClick={handleAddVehicle}
-                      className="flex-1 min-w-[160px] rounded-xl bg-black/70 border border-orange-500/30 px-4 py-3 text-sm hover:border-orange-400 transition"
-                    >
-                      + Inject 1
-                    </button>
-                  </div>
-                  <div className="flex items-center gap-3">
+              {toolMode === 'addEdge' && (
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                  <div className="text-xs uppercase tracking-wide text-orange-200/80">Add Node + Edge</div>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span>Lanes</span>
                     <input
                       type="number"
                       min={1}
-                      max={200}
-                      value={bulkCount}
+                      max={4}
+                      value={addToolState.lanes}
                       onChange={e =>
-                        setBulkCount(Math.max(1, Math.min(200, Number(e.target.value) || 1)))
+                        setAddToolState(s => ({
+                          ...s,
+                          lanes: Math.max(1, Math.min(4, Number(e.target.value) || 1)),
+                        }))
                       }
-                      className="w-24 rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                      className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-2 py-1 text-sm"
                     />
-                    <button
-                      onClick={() => handleAddVehiclesBulk(bulkCount)}
-                      className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-4 py-3 text-sm hover:border-orange-400 transition"
-                    >
-                      Inject {bulkCount}
-                    </button>
                   </div>
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                      <span>Traffic type</span>
-                      <span className="font-mono text-white">{trafficPresets[trafficLevel].label}</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {trafficLevels.map(level => (
-                        <button
-                          key={level}
-                          onClick={() => applyTrafficLevel(level)}
-                          className={`rounded-xl px-3 py-2 border text-sm transition ${
-                            trafficLevel === level
-                              ? 'border-orange-400 bg-orange-500/20 text-white'
-                              : 'border-orange-500/25 bg-black/60 text-orange-100 hover:border-orange-400'
-                          }`}
-                        >
-                          {trafficPresets[level].label}
-                        </button>
-                      ))}
-                    </div>
-                    <p className="text-[11px] text-orange-100/70">
-                      Choose intensity to quickly inject more vehicles into the scene.
-                    </p>
+                  <div className="flex gap-2 text-xs">
+                    {(['forward', 'backward', 'bidirectional'] as const).map(dir => (
+                      <button
+                        key={dir}
+                        onClick={() => setAddToolState(s => ({ ...s, direction: dir }))}
+                        className={`flex-1 rounded-xl px-2 py-1 border transition ${
+                          addToolState.direction === dir
+                            ? 'border-orange-400 bg-orange-500/20'
+                            : 'border-orange-500/25 bg-black/60'
+                        }`}
+                      >
+                        {dir}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3">
+              )}
+              </div>
+
+              <div className="grid sm:grid-cols-1 gap-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3 transition-colors transition-shadow duration-300 hover:bg-orange-500/10 hover:border-orange-400/40 hover:shadow-[0_10px_35px_rgba(255,121,48,0.25)]">
                   <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                    <span>Population target</span>
+                    <span>{translateText('populationTarget')}</span>
                     <span className="font-mono text-white">
-                      {vehicleTarget === 0 ? 'Off' : `${vehicleTarget} vehicles`}
+                      {vehicleTarget === 0
+                        ? translateText('off')
+                        : `${vehicleTarget} ${translateText('vehicles')}`}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -3891,37 +4349,40 @@ export default function TrafficSimulationApp() {
                     ))}
                   </div>
                   <p className="text-[11px] text-orange-100/70">
-                    Keeps the scene topped up after cars despawn. Start empty, then choose low / mid /
-                    high (120 / 500 / 1000).
+                    Make vehicle count consistent in your simulation with the following options.
                   </p>
                 </div>
               </div>
 
-              <div className="flex flex-wrap gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <button
                   onClick={() => setShowBackdrop(v => !v)}
-                  className={`rounded-full px-4 py-2 text-sm border transition ${
+                  className={`w-full rounded-full px-4 py-2 text-sm border transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] ${
                     showBackdrop
                       ? 'border-orange-400 bg-orange-500/20'
                       : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
                   }`}
                 >
-                  {showBackdrop ? 'Hide map detail' : 'Show map detail'}
+                  {showBackdrop ? translateText('hideMap') : translateText('showMap')}
                 </button>
                 <select
-                  value={backdropTheme}
-                  onChange={e => setBackdropTheme(e.target.value as keyof typeof BACKDROP_THEMES)}
-                  className="rounded-full px-3 py-2 text-sm border border-orange-500/25 bg-black/70 hover:border-orange-400 transition text-orange-100"
+                  value={language}
+                  onChange={e => setLanguage(e.target.value as LanguageCode)}
+                  className="w-full rounded-full px-3 py-2 text-sm border border-orange-500/30 bg-gradient-to-r from-black/80 via-black/70 to-black/80 hover:border-orange-400 hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] transition text-orange-100 focus:outline-none focus:border-orange-300"
                 >
-                  <option value="osm">OSM Standard</option>
-                  <option value="light">Light (Carto)</option>
-                  <option value="dark">Dark (Carto)</option>
+                  <option value="en">English</option>
+                  <option value="de">Deutsch</option>
+                  <option value="es">Español</option>
+                  <option value="zh">中文</option>
+                  <option value="tr">Türkçe</option>
+                  <option value="ar">العربية</option>
+                  <option value="fa">فارسی</option>
                 </select>
                 <button
                   onClick={() => applyZoom(1)}
-                  className="rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                  className="w-full rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)]"
                 >
-                  Reset zoom
+                  {translateText('resetZoom')}
                 </button>
               </div>
             </div>
@@ -3934,20 +4395,36 @@ export default function TrafficSimulationApp() {
         style={{ right: overlayRight }}
       >
         <div className="flex flex-col gap-1 pointer-events-auto">
-          <button
-            onClick={() => adjustZoom(0.1)}
-            className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold"
-            aria-label="Zoom in"
-          >
-            +
-          </button>
-          <button
-            onClick={() => adjustZoom(-0.1)}
-            className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold"
-            aria-label="Zoom out"
-          >
-            −
-          </button>
+          <div className="flex gap-1">
+            <button
+              onClick={() => adjustZoom(0.1)}
+              className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold"
+              aria-label="Zoom in"
+            >
+              +
+            </button>
+            <button
+              onClick={() => adjustZoom(-0.1)}
+              className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold"
+              aria-label="Zoom out"
+            >
+              −
+            </button>
+            <button
+              onClick={cycleBackdropTheme}
+              className="min-w-[88px] h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold px-3"
+              aria-label="Cycle map theme"
+            >
+              {themeLabel}
+            </button>
+            <button
+              onClick={() => setInputMode(m => (m === 'mouse' ? 'trackpad' : 'mouse'))}
+              className="h-10 rounded-xl bg-black/70 border border-orange-500/25 text-orange-50 hover:border-orange-400 transition text-sm font-semibold px-3"
+              aria-label="Toggle input mode"
+            >
+              {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
+            </button>
+          </div>
         </div>
         <div className="rounded-full bg-black/70 border border-orange-500/25 px-3 py-1 text-[11px] text-orange-100 shadow-[0_6px_20px_rgba(0,0,0,0.35)]">
           {hud.fps.toFixed(0)} fps
@@ -3955,7 +4432,10 @@ export default function TrafficSimulationApp() {
       </div>
 
       {selection && (selectedNode || selectedEdge) && (
-        <div className="absolute top-4 right-4 bottom-4 w-80 max-h-[calc(100vh-32px)] overflow-y-auto rounded-3xl border border-orange-500/25 bg-black/85 backdrop-blur-xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.55)] text-sm text-orange-50 space-y-3">
+        <div
+          className="absolute w-64 max-h-[260px] overflow-y-auto rounded-xl border border-orange-500/25 bg-black/80 backdrop-blur-xl p-3 shadow-[0_10px_30px_rgba(0,0,0,0.5)] text-sm text-orange-50 space-y-3 pointer-events-auto"
+          style={{ right: '1rem', bottom: '7.5rem' }}
+        >
           <div className="flex items-center justify-between">
             <div>
               <div className="text-xs uppercase tracking-wide text-orange-200/80">
