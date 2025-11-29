@@ -1586,6 +1586,14 @@ function drawScene(
   if (!ctx) return;
 
   const visibleBounds = getViewBounds(view, canvas, 120);
+  const fadeMarginPx = 800;
+  const fadeMarginWorld = fadeMarginPx / view.scale;
+  const fadeBounds: Bounds = {
+    minX: visibleBounds.minX - fadeMarginWorld,
+    maxX: visibleBounds.maxX + fadeMarginWorld,
+    minY: visibleBounds.minY - fadeMarginWorld,
+    maxY: visibleBounds.maxY + fadeMarginWorld,
+  };
 
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#0a0f1f';
@@ -1879,14 +1887,43 @@ function drawScene(
     const skipVehicleDraw =
       simulationMode === 'macro' && lodScale < 0.9;
     if (hideRoads || skipVehicleDraw) continue;
-    const vehicleBounds: Bounds = {
-      minX: vehicle.position.x - 6,
-      maxX: vehicle.position.x + 6,
-      minY: vehicle.position.y - 6,
-      maxY: vehicle.position.y + 6,
-    };
-    if (!boundsIntersect(vehicleBounds, visibleBounds)) continue;
+    const pos = vehicle.position;
+    const inVisible =
+      pos.x >= visibleBounds.minX &&
+      pos.x <= visibleBounds.maxX &&
+      pos.y >= visibleBounds.minY &&
+      pos.y <= visibleBounds.maxY;
+    const inFade =
+      pos.x >= fadeBounds.minX &&
+      pos.x <= fadeBounds.maxX &&
+      pos.y >= fadeBounds.minY &&
+      pos.y <= fadeBounds.maxY;
+    if (!inVisible && !inFade) continue;
+
+    let alpha = 1;
+    if (!inVisible && inFade) {
+      const dx =
+        pos.x < visibleBounds.minX
+          ? visibleBounds.minX - pos.x
+          : pos.x > visibleBounds.maxX
+          ? pos.x - visibleBounds.maxX
+          : 0;
+      const dy =
+        pos.y < visibleBounds.minY
+          ? visibleBounds.minY - pos.y
+          : pos.y > visibleBounds.maxY
+          ? pos.y - visibleBounds.maxY
+          : 0;
+      const distOutside = Math.sqrt(dx * dx + dy * dy);
+      // Softer falloff: sublinear easing to keep cars visible longer
+      const t = clamp(distOutside / fadeMarginWorld, 0, 1);
+      alpha = clamp(1 - Math.pow(t, 0.55), 0, 1);
+    }
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
     drawVehicle(ctx, view, vehicle);
+    ctx.restore();
   }
 }
 
@@ -2081,7 +2118,7 @@ function splitEdgeAtNode(
   network.addEdge(right);
 }
 
-function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 0.5) {
+function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 1.5) {
   const tolSq = tolerance * tolerance;
   const dangling = Array.from(network.nodes.values()).filter(n => n.outgoingEdges.length === 0);
 
@@ -3225,35 +3262,48 @@ export default function TrafficSimulationApp() {
         trafficLightsRef
       );
       enforceTrafficLights(runtime.engine, trafficLightsRef.current);
-      renderSkipRef.current = !renderSkipRef.current;
-      const shouldRender = !renderSkipRef.current; // render every other frame
-      if (shouldRender) {
-        const roadLayer = renderRoadLayer(view);
-        drawScene(
-          canvas,
-          runtime.engine,
-          view,
-          backdropContextRef.current || undefined,
-          spawnPointsRef.current,
-          runtime.network,
-          selectionRef.current,
-          spawnPointPlacementMode,
-          showRoadEdges,
-          trafficLightsRef.current,
-          roadStyle,
-          simulationMode,
-          toolMode,
-          subnetworkSelection,
-          addToolState.pendingNodeId,
-          roadLayer,
-          hotspotsRef.current
-        );
+      // Cull vehicles far outside view to keep population local to camera
+      if (frameCountRef.current % 45 === 0) {
+        const cullMarginPx = 1600;
+        const rect = canvas.getBoundingClientRect();
+        const viewBounds = getViewBounds(view, canvas, cullMarginPx / view.scale);
+        const idsToRemove: string[] = [];
+        for (const v of runtime.engine.vehicles.values()) {
+          const p = v.position;
+          const inside =
+            p.x >= viewBounds.minX &&
+            p.x <= viewBounds.maxX &&
+            p.y >= viewBounds.minY &&
+            p.y <= viewBounds.maxY;
+          if (!inside) idsToRemove.push(v.id);
+        }
+        if (idsToRemove.length) {
+          idsToRemove.forEach(id => runtime.engine.removeVehicle(id));
+        }
       }
+      const roadLayer = renderRoadLayer(view);
+      drawScene(
+        canvas,
+        runtime.engine,
+        view,
+        backdropContextRef.current || undefined,
+        spawnPointsRef.current,
+        runtime.network,
+        selectionRef.current,
+        spawnPointPlacementMode,
+        showRoadEdges,
+        trafficLightsRef.current,
+        roadStyle,
+        simulationMode,
+        toolMode,
+        subnetworkSelection,
+        addToolState.pendingNodeId,
+        roadLayer,
+        hotspotsRef.current
+      );
 
       hudAccumulatorRef.current += delta;
-      if (shouldRender) {
         frameCountRef.current += 1;
-      }
       if (hudAccumulatorRef.current >= 0.25) {
         let vehicleCount = 0;
         let speedSum = 0;
@@ -3263,7 +3313,7 @@ export default function TrafficSimulationApp() {
         }
         const avgSpeed = vehicleCount > 0 ? speedSum / vehicleCount : 0;
         const fps =
-          shouldRender && hudAccumulatorRef.current > 0
+           hudAccumulatorRef.current > 0
             ? frameCountRef.current / hudAccumulatorRef.current
             : hud.fps;
 
@@ -3773,8 +3823,10 @@ export default function TrafficSimulationApp() {
     const view = viewRef.current;
     if (!runtime || !canvas || !view) return false;
 
-    // Get visible bounds to filter spawn points
+    // Get visible and soft bounds to filter spawn locations
     const visibleBounds = getViewBounds(view, canvas, 0);
+    const spawnMarginPx = 900;
+    const spawnBounds = getViewBounds(view, canvas, spawnMarginPx);
 
     const pickLaneFromNode = (nodeId: string): Lane | undefined => {
       const candidateLanes: Lane[] = [];
@@ -3836,12 +3888,17 @@ export default function TrafficSimulationApp() {
       // If no visible spawn points, fall through to default behavior
     }
 
-    const lanes = Array.from(runtime.network.lanes.values()).filter(
+    const drivingLanes = Array.from(runtime.network.lanes.values()).filter(
       l => l.laneType === 'driving'
     );
-    if (lanes.length === 0) return false;
+    if (drivingLanes.length === 0) return false;
 
-    const bestLane = lanes.reduce(
+    const lanesInView = drivingLanes.filter(l =>
+      boundsIntersect(getLaneBounds(l), spawnBounds)
+    );
+    const candidateLanes = lanesInView.length > 0 ? lanesInView : drivingLanes;
+
+    const bestLane = candidateLanes.reduce(
       (best, lane) => {
         const count = runtime.engine.getVehiclesInLane(lane.id).length;
         if (count < best.count) {
@@ -3849,7 +3906,7 @@ export default function TrafficSimulationApp() {
         }
         return best;
       },
-      { lane: lanes[0], count: runtime.engine.getVehiclesInLane(lanes[0].id).length }
+      { lane: candidateLanes[0], count: runtime.engine.getVehiclesInLane(candidateLanes[0].id).length }
     ).lane;
 
     return trySpawnInLane(bestLane);
