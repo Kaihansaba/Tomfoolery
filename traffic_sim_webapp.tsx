@@ -408,7 +408,7 @@ function hotspotWeightFromTags(tags: Record<string, string>): number {
 }
 
 function isHotspotCandidate(tags: Record<string, string> = {}): boolean {
-  return (
+  return !!(
     (tags['amenity'] && HOTSPOT_TAGS.amenity.test(tags['amenity'])) ||
     (tags['shop'] && HOTSPOT_TAGS.shop.test(tags['shop'])) ||
     (tags['leisure'] && HOTSPOT_TAGS.leisure.test(tags['leisure'])) ||
@@ -2276,6 +2276,8 @@ export default function TrafficSimulationApp() {
   const [statModeIndex, setStatModeIndex] = useState(0);
   const [panelOpen, setPanelOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [hoveredTool, setHoveredTool] = useState<{ label: string; top: number } | null>(null);
+  const toolsListRef = useRef<HTMLDivElement | null>(null);
   const [showRoadEdges, setShowRoadEdges] = useState(true);
   const [spawnPoints, setSpawnPoints] = useState<string[]>([]);
   const [spawnPointPlacementMode, setSpawnPointPlacementMode] = useState(false);
@@ -2308,10 +2310,6 @@ export default function TrafficSimulationApp() {
   const pendingIndexRef = useRef<Promise<any> | null>(null);
   const laneCount = runtimeRef.current?.network.lanes.size ?? 0;
   const avgSpeedKmh = hud.avgSpeed * 3.6;
-  const selectedSpeedLimitKmh =
-    selection?.type === 'edge' && selectedStats?.speedLimit
-      ? selectedStats.speedLimit * 3.6
-      : undefined;
   const totalLaneLengthKm = (() => {
     const runtime = runtimeRef.current;
     if (!runtime) return undefined;
@@ -2578,7 +2576,7 @@ export default function TrafficSimulationApp() {
           if (!boundsIntersect(laneBounds, visibleBounds)) continue;
           ctx.save();
           ctx.globalAlpha = fadeAlpha < 1 ? fadeAlpha : 1;
-          drawLane(ctx, view, lane, laneIndex++);
+          drawLane(ctx, view, lane, laneIndex++, roadStyle);
           ctx.restore();
         }
 
@@ -2588,7 +2586,7 @@ export default function TrafficSimulationApp() {
 
       return layer;
     },
-    [showRoadEdges]
+    [showRoadEdges, roadStyle]
   );
 
   const requestRedraw = useCallback(() => {
@@ -3259,6 +3257,7 @@ export default function TrafficSimulationApp() {
         spawnPointPlacementMode,
         showRoadEdges,
         trafficLightsRef.current,
+        roadStyle,
         simulationMode,
         toolMode,
         subnetworkSelection,
@@ -3718,6 +3717,10 @@ export default function TrafficSimulationApp() {
     selection?.type === 'edge' && runtimeForSelection
       ? computeEdgeStats(runtimeForSelection.network, selection.id)
       : undefined;
+  const selectedSpeedLimitKmh =
+    selection?.type === 'edge' && selectedStats?.speedLimit
+      ? selectedStats.speedLimit * 3.6
+      : undefined;
   const selectedJSON = selection
     ? JSON.stringify(selection.type === 'node' ? selectedNode : selectedEdge, null, 2)
     : '';
@@ -3835,7 +3838,6 @@ export default function TrafficSimulationApp() {
         >
           <Sparkles className="text-black drop-shadow" size={22} />
         </button>
-
         <div className="relative">
           <button
             onClick={() => setToolsOpen(open => !open)}
@@ -3851,11 +3853,12 @@ export default function TrafficSimulationApp() {
                 : 'opacity-0 scale-95 -translate-y-1 pointer-events-none'
             }`}
           >
-            <div className="rounded-2xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] px-2 py-2 w-16 h-48 overflow-visible">
-              <div
-                className="relative flex flex-col gap-2 max-h-40 overflow-y-auto pr-1 overflow-visible"
-                style={{ overflowX: 'visible' }}
-              >
+              <div className="rounded-2xl bg-black/85 backdrop-blur-xl border border-orange-500/30 shadow-[0_20px_50px_rgba(0,0,0,0.55)] px-2 py-2 w-16 h-48 overflow-visible relative">
+                <div
+                  ref={toolsListRef}
+                  className="relative flex flex-col gap-2 max-h-40 overflow-y-auto pr-1"
+                  onMouseLeave={() => setHoveredTool(null)}
+                >
                 {[
                 {
                   key: 'spawn',
@@ -3953,6 +3956,15 @@ export default function TrafficSimulationApp() {
                         tool.action();
                         setToolsOpen(false);
                       }}
+                      onMouseEnter={e => {
+                        const target = e.currentTarget;
+                        const scrollTop = toolsListRef.current?.scrollTop ?? 0;
+                        setHoveredTool({
+                          label: tool.label,
+                          top: target.offsetTop + target.offsetHeight / 2 - scrollTop,
+                        });
+                      }}
+                      onMouseLeave={() => setHoveredTool(null)}
                     className={`group relative flex items-center justify-center w-11 h-11 rounded-xl hover:bg-orange-500/10 transition ${
                       toolMode === tool.key ? 'bg-orange-500/15' : ''
                     }`}
@@ -3960,9 +3972,6 @@ export default function TrafficSimulationApp() {
                     <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
                       <Icon size={18} className="text-orange-200" />
                     </div>
-                    <span className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 whitespace-nowrap text-white text-sm px-2 py-1 rounded-lg bg-black/80 border border-orange-500/30 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition transform translate-x-2 group-hover:-translate-x-1 z-50">
-                      {tool.label}
-                    </span>
                   </button>
                 );
               })}
@@ -3971,15 +3980,36 @@ export default function TrafficSimulationApp() {
                   className={`group relative flex items-center justify-center w-11 h-11 rounded-xl hover:bg-orange-500/10 transition ${
                     lightTimerOpen ? 'bg-orange-500/15' : ''
                   }`}
+                  onMouseEnter={e => {
+                    const target = e.currentTarget;
+                    const scrollTop = toolsListRef.current?.scrollTop ?? 0;
+                    setHoveredTool({
+                      label: `Light timer (${trafficLightTimer || 0}s)`,
+                      top: target.offsetTop + target.offsetHeight / 2 - scrollTop,
+                    });
+                  }}
+                  onMouseLeave={() => setHoveredTool(null)}
                 >
                   <div className="w-9 h-9 rounded-2xl bg-orange-500/10 border border-orange-500/25 flex items-center justify-center">
                     <Clock3 size={18} className="text-orange-200" />
                   </div>
-                  <span className="pointer-events-none absolute right-full top-1/2 -translate-y-1/2 mr-2 whitespace-nowrap text-white text-sm px-2 py-1 rounded-lg bg-black/80 border border-orange-500/30 opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition transform translate-x-2 group-hover:-translate-x-1 z-50">
-                    {`Light timer (${trafficLightTimer || 0}s)`}
-                  </span>
                 </button>
               </div>
+              {hoveredTool && (
+                <div
+                  className="pointer-events-none absolute right-full mr-3 z-50 min-w-[140px] rounded-xl bg-black/85 border border-orange-500/40 px-3 py-2 text-sm text-white shadow-[0_10px_30px_rgba(0,0,0,0.55)] transition-all duration-150 ease-out origin-right"
+                  style={{
+                    top: hoveredTool.top + 4,
+                    transform: 'translateY(-50%) translateX(6px)',
+                    opacity: 1,
+                  }}
+                >
+                  <div className="flex items-center gap-2">
+                    <div className="h-2 w-2 rounded-full bg-orange-400 animate-pulse" />
+                    <span className="text-sm">{hoveredTool.label}</span>
+                  </div>
+                </div>
+              )}
               {lightTimerOpen && (
                 <div className="mt-2 rounded-xl border border-orange-500/25 bg-black/80 px-3 py-2 text-xs text-orange-100/80 flex items-center gap-2">
                   <Clock3 size={14} className="text-orange-200" />
@@ -4004,10 +4034,9 @@ export default function TrafficSimulationApp() {
       </div>
 
       <div
-        className={`absolute top-4 left-4 w-[90vw] sm:w-[460px] max-w-[560px] z-30 transition-transform transition-opacity duration-400 ease-out ${
-          panelOpen ? 'translate-y-0 opacity-100' : '-translate-y-8 opacity-0 pointer-events-none'
+        className={`absolute left-6 right-6 sm:right-auto sm:w-[460px] max-w-[560px] z-30 transition-all duration-500 ${
+          panelOpen ? 'top-4 bottom-4' : 'bottom-6'
         }`}
-        style={{ willChange: 'transform, opacity' }}
       >
         <div
           className={`relative rounded-[24px] border border-orange-500/25 bg-black/80 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.55)] transition-all duration-500 ${
@@ -4093,7 +4122,7 @@ export default function TrafficSimulationApp() {
                 <>
                   <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-2">
                     <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                      <span>{translateText('statistics') ?? 'Statistics'}</span>
+                      <span>Statistics</span>
                     </div>
                     <div className="grid grid-cols-3 gap-2">
                       <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
