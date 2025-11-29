@@ -345,7 +345,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
         edge?.name ?? edge?.metadata?.name ?? edge?.metadata?.ref ?? edge?.id;
       const crossingDifferentStreet = streetKey(currentEdge) !== streetKey(targetEdge);
       const priorityRoad =
-        (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) >= 3) ?? false;
+        (targetEdge?.roadType === 'highway' || (targetEdge?.laneCount ?? 0) > (currentEdge?.laneCount ?? 0)) ?? false;
       const minMergeGap = crossingDifferentStreet ? (priorityRoad ? 8 : 5) : 2.5;
 
       const proposedPos = vehicle.lanePosition;
