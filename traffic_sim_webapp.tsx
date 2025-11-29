@@ -4526,6 +4526,21 @@ export default function TrafficSimulationApp() {
                     </div>
                   </div>
                 </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsRunning(prev => !prev)}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                  >
+                    {isRunning ? <Pause size={14} /> : <Play size={14} />}
+                    <span>{isRunning ? translateText('pause') : translateText('play')}</span>
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm font-semibold hover:border-orange-400 transition"
+                  >
+                    {translateText('reset')}
+                  </button>
+                </div>
 
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div className="rounded-2xl bg-black/60 border border-orange-500/30 px-2.5 py-2 space-y-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
