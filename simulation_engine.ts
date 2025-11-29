@@ -473,6 +473,12 @@ export class TrafficSimulationEngine implements SimulationEngine {
         continue;
       }
 
+      // Enforce lane speed limit
+      if (lane.speedLimit && vehicle.velocity > lane.speedLimit) {
+        vehicle.velocity = lane.speedLimit;
+        if (vehicle.acceleration > 0) vehicle.acceleration = 0;
+      }
+
       // Congestion guard: if nearing lane end and successors are blocked, slow/stop
       const remaining = lane.length - vehicle.lanePosition;
       if (remaining < 20 && lane.successors.length > 0) {
@@ -495,8 +501,33 @@ export class TrafficSimulationEngine implements SimulationEngine {
           vehicle.acceleration = Math.min(vehicle.acceleration, -4);
         }
       }
-      
+
+      // If we would leave the lane this step, only transition if a successor has space.
       if (vehicle.lanePosition > lane.length) {
+        const minGap = 8;
+        let successorWithSpace: Lane | null = null;
+        for (const succId of lane.successors) {
+          const succLane = this.network.getLane(succId);
+          if (!succLane) continue;
+          let nearest: number | null = null;
+          for (const v of this.vehicles.values()) {
+            if (v.laneId !== succId) continue;
+            if (nearest === null || v.lanePosition < nearest) nearest = v.lanePosition;
+          }
+          if (nearest === null || nearest > minGap) {
+            successorWithSpace = succLane;
+            break;
+          }
+        }
+        if (!successorWithSpace && lane.successors.length > 0) {
+          // Hold position at end of lane and stop; try again next frame
+          vehicle.lanePosition = Math.max(0, lane.length - 0.5);
+          vehicle.velocity = 0;
+          vehicle.acceleration = 0;
+          this.updateGlobalPosition(vehicle, lane);
+          continue;
+        }
+
         // Vehicle has left this lane - handle successor
         this.handleLaneTransition(vehicle, lane);
         lane = this.network.getLane(vehicle.laneId) || lane;
@@ -669,12 +700,12 @@ export class TrafficSimulationEngine implements SimulationEngine {
     // Interpolate position along lane centerline
     const t = vehicle.lanePosition / lane.length;
     const position = this.interpolateLanePosition(lane, t);
-    
-    // Apply lateral offset
+    // Lock to centerline (ignore laneOffset to avoid lateral jitter/overlap)
+    vehicle.laneOffset = 0;
     const normal = this.getLaneNormal(lane, t);
     vehicle.position = {
-      x: position.x + normal.x * vehicle.laneOffset,
-      y: position.y + normal.y * vehicle.laneOffset,
+      x: position.x,
+      y: position.y,
     };
     
     // Update heading

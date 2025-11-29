@@ -309,6 +309,12 @@ export class MOBILModel implements ILaneChangeModel {
     const followerParams = newFollower
       ? DEFAULT_VEHICLE_TYPES[newFollower.type]?.driver
       : undefined;
+    const egoPhys = DEFAULT_VEHICLE_TYPES[vehicle.type]?.physical;
+    const leadPhys = newLeader ? DEFAULT_VEHICLE_TYPES[newLeader.type]?.physical : undefined;
+    const follPhys = newFollower ? DEFAULT_VEHICLE_TYPES[newFollower.type]?.physical : undefined;
+    const egoLen = egoPhys?.length ?? 4.5;
+    const leadLen = leadPhys?.length ?? 4.5;
+    const follLen = follPhys?.length ?? 4.5;
 
     if (newLeader?.kind === 'obstacle') {
       const gapAhead = newLeader.lanePosition - vehicle.lanePosition;
@@ -318,14 +324,21 @@ export class MOBILModel implements ILaneChangeModel {
     }
 
     const desiredAhead =
-      (params?.minSpacing ?? 2) + Math.max(4, vehicle.velocity * (params?.timeHeadway ?? 1.2));
+      (params?.minSpacing ?? 2) +
+      (egoLen + leadLen) * 0.5 +
+      Math.max(4, vehicle.velocity * (params?.timeHeadway ?? 1.2));
     const desiredBehind =
       (followerParams?.minSpacing ?? 2) +
+      (egoLen + follLen) * 0.5 +
       Math.max(3, (newFollower?.velocity ?? 0) * (followerParams?.timeHeadway ?? 1.5));
 
     if (newLeader) {
       const gapAhead = newLeader.lanePosition - vehicle.lanePosition;
       if (gapAhead < desiredAhead) return false;
+      // Time-to-collision check
+      const relSpeed = Math.max(0, vehicle.velocity - Math.max(0, newLeader.velocity));
+      const ttc = relSpeed > 0 ? gapAhead / relSpeed : Infinity;
+      if (ttc < 1.5) return false;
     }
 
     if (newFollower) {
@@ -335,6 +348,10 @@ export class MOBILModel implements ILaneChangeModel {
       const followerAccel = this.estimateAcceleration(newFollower, vehicle, targetLane);
       const safe = followerParams?.safeDecel ?? params?.safeDecel ?? this.safeDecel;
       if (followerAccel < -safe) return false;
+      // Also ensure the follower has time to react
+      const relSpeedBack = Math.max(0, (newFollower.velocity ?? 0) - Math.max(0, vehicle.velocity));
+      const ttcBack = relSpeedBack > 0 ? gapBehind / relSpeedBack : Infinity;
+      if (ttcBack < 1.5) return false;
     }
 
     return true;

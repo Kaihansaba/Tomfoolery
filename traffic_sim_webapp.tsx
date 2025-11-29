@@ -2182,6 +2182,30 @@ function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 2.5) 
   network.rebuildLaneConnectivity();
 }
 
+function splitNodesWithoutIncomingEdges(network: RoadNetworkImpl, tolerance = 2.5) {
+  const tolSq = tolerance * tolerance;
+  const lonely = Array.from(network.nodes.values()).filter(n => n.incomingEdges.length === 0);
+
+  for (const node of lonely) {
+    const pos = node.position;
+    for (const edge of Array.from(network.edges.values())) {
+      const geom = edge.geometry;
+      if (!geom || geom.length < 2) continue;
+      const hitIdx = geom.findIndex((pt, idx) => {
+        if (idx === 0 || idx === geom.length - 1) return false;
+        const dx = pt.x - pos.x;
+        const dy = pt.y - pos.y;
+        return dx * dx + dy * dy <= tolSq;
+      });
+      if (hitIdx > 0 && hitIdx < geom.length - 1) {
+        splitEdgeAtNode(network, edge, node.id, pos, hitIdx);
+        break;
+      }
+    }
+  }
+  network.rebuildLaneConnectivity();
+}
+
 function updateTrafficLightTimers(
   lights: TrafficLight[],
   currentTime: number,
@@ -2336,6 +2360,7 @@ async function fetchChunkAndMerge(
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     splitDanglingNodesIntoEdges(runtime.network);
+    splitNodesWithoutIncomingEdges(runtime.network);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
     let hotspotsChanged = false;
@@ -3044,6 +3069,7 @@ export default function TrafficSimulationApp() {
     const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
     const network = sourceNetwork;
     splitDanglingNodesIntoEdges(network);
+    splitNodesWithoutIncomingEdges(network);
     totalLaneLengthKmRef.current = computeTotalLaneLengthKm(network);
     const simConfig: SimulationConfig = {
       timeStep: 1 / 50, // slightly larger step for lighter compute
@@ -3955,11 +3981,8 @@ export default function TrafficSimulationApp() {
 
     const trySpawnInLane = (lane: Lane): boolean => {
       const laneVehicles = runtime.engine.getVehiclesInLane(lane.id);
-      const pos = Math.min(
-        lane.length - 5,
-        Math.max(1, 5 + Math.random() * Math.min(20, lane.length * 0.4))
-      );
-      const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 6);
+      const pos = Math.min(lane.length - 5, Math.max(1.5, 2 + Math.random() * 6)); // spawn near start
+      const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 8);
       if (!hasSpace) return false;
       const vehicle = createVehicleState(lane, pos);
       maybeAssignHotspotDestination(vehicle, runtime.network, hotspotsRef.current);
@@ -4526,6 +4549,21 @@ export default function TrafficSimulationApp() {
                     </div>
                   </div>
                 </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setIsRunning(prev => !prev)}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
+                  >
+                    {isRunning ? <Pause size={14} /> : <Play size={14} />}
+                    <span>{isRunning ? translateText('pause') : translateText('play')}</span>
+                  </button>
+                  <button
+                    onClick={handleReset}
+                    className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm font-semibold hover:border-orange-400 transition"
+                  >
+                    {translateText('reset')}
+                  </button>
+                </div>
 
                 <div className="grid sm:grid-cols-2 gap-3">
                   <div className="rounded-2xl bg-black/60 border border-orange-500/30 px-2.5 py-2 space-y-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
@@ -5005,9 +5043,6 @@ export default function TrafficSimulationApp() {
               {inputMode === 'trackpad' ? 'Trackpad' : 'Mouse'}
             </button>
           </div>
-        </div>
-        <div className="rounded-full bg-black/70 border border-orange-500/25 px-3 py-1 text-[11px] text-orange-100 shadow-[0_6px_20px_rgba(0,0,0,0.35)]">
-          {hud.fps.toFixed(0)} fps
         </div>
       </div>
 
