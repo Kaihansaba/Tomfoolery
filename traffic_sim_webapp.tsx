@@ -33,6 +33,7 @@ import {
   BackdropConfig,
   GeoReference,
   Hotspot,
+  RoadNetwork,
 } from './traffic_sim_interfaces';
 import exampleNetworks from './example_networks.json';
 import testperchance from './testperchance.json';
@@ -1262,10 +1263,37 @@ function drawObstacle(
   ctx.restore();
 }
 
+function mixColors(a: { r: number; g: number; b: number }, b: { r: number; g: number; b: number }, t: number) {
+  return {
+    r: Math.round(a.r + (b.r - a.r) * t),
+    g: Math.round(a.g + (b.g - a.g) * t),
+    b: Math.round(a.b + (b.b - a.b) * t),
+  };
+}
+
+function speedColorForVehicle(vehicle: VehicleState, network: RoadNetwork): string {
+  const lane = network.getLane ? network.getLane(vehicle.laneId) : undefined;
+  const limit = lane?.speedLimit ?? DEFAULT_VEHICLE_TYPES[vehicle.type]?.physical.maxSpeed ?? 15;
+  const v = Math.max(0, vehicle.velocity);
+  const ratio = limit > 0 ? clamp(v / limit, 0, 1) : 0;
+
+  // Red (slow) -> Amber (mid) -> Green (fast)
+  const slow = { r: 239, g: 68, b: 68 }; // #ef4444
+  const mid = { r: 245, g: 158, b: 11 }; // #f59e0b
+  const fast = { r: 34, g: 197, b: 94 }; // #22c55e
+
+  const color =
+    ratio < 0.5
+      ? mixColors(slow, mid, ratio / 0.5)
+      : mixColors(mid, fast, (ratio - 0.5) / 0.5);
+  return `rgb(${color.r}, ${color.g}, ${color.b})`;
+}
+
 function drawVehicle(
   ctx: CanvasRenderingContext2D,
   view: ViewTransform,
-  vehicle: VehicleState
+  vehicle: VehicleState,
+  network: RoadNetwork
 ): void {
   if (vehicle.kind === 'obstacle') {
     drawObstacle(ctx, view, vehicle);
@@ -1276,6 +1304,7 @@ function drawVehicle(
   const width = clamp(base.physical.width * view.scale, 3, 14);
   const length = clamp(base.physical.length * view.scale, 6, 32);
   const pos = worldToScreen(view, vehicle.position);
+  const speedColor = speedColorForVehicle(vehicle, network);
 
   ctx.save();
   
@@ -1295,11 +1324,21 @@ function drawVehicle(
   if (useCarSprite && carSprite) {
     // Scale the car sprite to the vehicle's physical dimensions on screen
     ctx.drawImage(carSprite, -length / 2, -width / 2, length, width);
+    const baseAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = baseAlpha * 0.6;
+    ctx.fillStyle = speedColor;
+    ctx.fillRect(-length / 2, -width / 2, length, width);
+    ctx.globalAlpha = baseAlpha;
   } else if (useBusSprite && busSprite) {
     // Scale the bus sprite to the vehicle's physical dimensions on screen
     ctx.drawImage(busSprite, -length / 2, -width / 2, length, width);
+    const baseAlpha = ctx.globalAlpha;
+    ctx.globalAlpha = baseAlpha * 0.6;
+    ctx.fillStyle = speedColor;
+    ctx.fillRect(-length / 2, -width / 2, length, width);
+    ctx.globalAlpha = baseAlpha;
   } else {
-    ctx.fillStyle = vehicle.color || base.color || '#6ee7b7';
+    ctx.fillStyle = speedColor;
     ctx.strokeStyle = '#0b0f1a';
     ctx.lineWidth = 1;
 
@@ -1964,7 +2003,7 @@ function drawScene(
 
     ctx.save();
     ctx.globalAlpha = alpha;
-    drawVehicle(ctx, view, vehicle);
+    drawVehicle(ctx, view, vehicle, engine.network);
     ctx.restore();
   }
 }
