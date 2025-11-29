@@ -993,6 +993,26 @@ function findNearestNodeIdToWorldPoint(network: RoadNetworkImpl, x: number, y: n
   return best;
 }
 
+function findNearestRoutableNodeId(
+  network: RoadNetworkImpl,
+  x: number,
+  y: number
+): string | null {
+  let best: string | null = null;
+  let bestDistSq = Infinity;
+  for (const node of network.nodes.values()) {
+    if (!node.outgoingEdges || node.outgoingEdges.length === 0) continue;
+    const dx = node.position.x - x;
+    const dy = node.position.y - y;
+    const d2 = dx * dx + dy * dy;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      best = node.id;
+    }
+  }
+  return best;
+}
+
 function createVehicleState(lane: Lane, position: number, category?: VehicleCategory): VehicleState {
   const type = category ?? pickCategory();
   const params = DEFAULT_VEHICLE_TYPES[type];
@@ -1637,7 +1657,7 @@ function drawScene(
     }
   }
 
-  if (network && spawnPoints.length > 0) {
+  if (highlightSpawnNodes && network && spawnPoints.length > 0) {
     ctx.fillStyle = '#10b981';
     for (const id of spawnPoints) {
       const node = network.getNode(id);
@@ -2132,7 +2152,8 @@ async function fetchChunkAndMerge(
   markRoadsDirty?: () => void,
   addTrafficLights?: (lights: TrafficLight[]) => void,
   hotspots?: Hotspot[],
-  hotspotIds?: Set<string>
+  hotspotIds?: Set<string>,
+  onHotspotsUpdated?: () => void
 ) {
   const geoRef = runtime.network.geoReference;
   if (!geoRef) return;
@@ -2166,7 +2187,9 @@ async function fetchChunkAndMerge(
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
+    let hotspotsChanged = false;
     if (hotspots && hotspotIds) {
+      const prevHotspotCount = hotspots.length;
       for (const el of data.elements) {
         if (el.type !== 'node') continue;
         const node = el as OSMNode;
@@ -2186,6 +2209,7 @@ async function fetchChunkAndMerge(
         };
         hotspotIds.add(id);
         hotspots.push(hs);
+        hotspotsChanged = true;
       }
       // Deduplicate densely clustered hotspots (e.g., shop lots) within 120m, keep highest weight
       const filtered: Hotspot[] = [];
@@ -2208,6 +2232,9 @@ async function fetchChunkAndMerge(
         }
       }
       hotspots.splice(0, hotspots.length, ...filtered);
+      if (hotspots.length !== prevHotspotCount) {
+        hotspotsChanged = true;
+      }
     }
     if (addTrafficLights) {
       const extracted = extractTrafficLightsFromOSM(data, geoRef, runtime.network, chunkKey);
@@ -2215,6 +2242,9 @@ async function fetchChunkAndMerge(
     }
     chunkCache.add(chunkKey);
     onRedraw();
+    if (hotspotsChanged && onHotspotsUpdated) {
+      onHotspotsUpdated();
+    }
   } catch (err) {
     if (DEBUG_FETCH_LOGS) {
       console.error('Chunk fetch failed', { chunkKey, err });
@@ -2407,6 +2437,29 @@ export default function TrafficSimulationApp() {
     setBackdropTheme(next);
   }, [backdropTheme]);
 
+  const syncSpawnPointsFromHotspots = useCallback(() => {
+    const runtime = runtimeRef.current;
+    if (!runtime) return;
+    const hotspots = hotspotsRef.current;
+    if (!hotspots || hotspots.length === 0) return;
+
+    const existing = new Set(spawnPointsRef.current);
+    let added = false;
+    for (const hs of hotspots) {
+      const nodeId = findNearestRoutableNodeId(runtime.network, hs.x, hs.y);
+      if (nodeId && !existing.has(nodeId)) {
+        existing.add(nodeId);
+        added = true;
+      }
+    }
+
+    if (added) {
+      const next = Array.from(existing);
+      spawnPointsRef.current = next;
+      setSpawnPoints(next);
+    }
+  }, []);
+
 
   useEffect(() => {
     if (backdropContextRef.current) {
@@ -2551,10 +2604,11 @@ export default function TrafficSimulationApp() {
           });
         },
         hotspotsRef.current,
-        hotspotIdsRef.current
+        hotspotIdsRef.current,
+        syncSpawnPointsFromHotspots
       );
     },
-    [scenario, showBackdrop]
+    [scenario, showBackdrop, syncSpawnPointsFromHotspots]
   );
 
   const renderRoadLayer = useCallback(
