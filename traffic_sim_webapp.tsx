@@ -2160,7 +2160,7 @@ function splitEdgeAtNode(
   network.addEdge(right);
 }
 
-function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 2.1) {
+function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 2.5) {
   const tolSq = tolerance * tolerance;
   const dangling = Array.from(network.nodes.values()).filter(n => n.outgoingEdges.length === 0);
 
@@ -2177,6 +2177,30 @@ function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 2.1) 
       if (hitIdx <= 0 || hitIdx >= geom.length - 1) continue;
       splitEdgeAtNode(network, edge, node.id, pos, hitIdx);
       break;
+    }
+  }
+  network.rebuildLaneConnectivity();
+}
+
+function splitNodesWithoutIncomingEdges(network: RoadNetworkImpl, tolerance = 2.5) {
+  const tolSq = tolerance * tolerance;
+  const lonely = Array.from(network.nodes.values()).filter(n => n.incomingEdges.length === 0);
+
+  for (const node of lonely) {
+    const pos = node.position;
+    for (const edge of Array.from(network.edges.values())) {
+      const geom = edge.geometry;
+      if (!geom || geom.length < 2) continue;
+      const hitIdx = geom.findIndex((pt, idx) => {
+        if (idx === 0 || idx === geom.length - 1) return false;
+        const dx = pt.x - pos.x;
+        const dy = pt.y - pos.y;
+        return dx * dx + dy * dy <= tolSq;
+      });
+      if (hitIdx > 0 && hitIdx < geom.length - 1) {
+        splitEdgeAtNode(network, edge, node.id, pos, hitIdx);
+        break;
+      }
     }
   }
   network.rebuildLaneConnectivity();
@@ -2336,6 +2360,7 @@ async function fetchChunkAndMerge(
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
     splitDanglingNodesIntoEdges(runtime.network);
+    splitNodesWithoutIncomingEdges(runtime.network);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
     let hotspotsChanged = false;
@@ -3044,6 +3069,7 @@ export default function TrafficSimulationApp() {
     const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
     const network = sourceNetwork;
     splitDanglingNodesIntoEdges(network);
+    splitNodesWithoutIncomingEdges(network);
     totalLaneLengthKmRef.current = computeTotalLaneLengthKm(network);
     const simConfig: SimulationConfig = {
       timeStep: 1 / 50, // slightly larger step for lighter compute
@@ -3955,11 +3981,8 @@ export default function TrafficSimulationApp() {
 
     const trySpawnInLane = (lane: Lane): boolean => {
       const laneVehicles = runtime.engine.getVehiclesInLane(lane.id);
-      const pos = Math.min(
-        lane.length - 5,
-        Math.max(1, 5 + Math.random() * Math.min(20, lane.length * 0.4))
-      );
-      const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 6);
+      const pos = Math.min(lane.length - 5, Math.max(1.5, 2 + Math.random() * 6)); // spawn near start
+      const hasSpace = laneVehicles.every(v => Math.abs(v.lanePosition - pos) > 8);
       if (!hasSpace) return false;
       const vehicle = createVehicleState(lane, pos);
       maybeAssignHotspotDestination(vehicle, runtime.network, hotspotsRef.current);

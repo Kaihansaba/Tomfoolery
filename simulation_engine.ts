@@ -473,6 +473,12 @@ export class TrafficSimulationEngine implements SimulationEngine {
         continue;
       }
 
+      // Enforce lane speed limit
+      if (lane.speedLimit && vehicle.velocity > lane.speedLimit) {
+        vehicle.velocity = lane.speedLimit;
+        if (vehicle.acceleration > 0) vehicle.acceleration = 0;
+      }
+
       // Congestion guard: if nearing lane end and successors are blocked, slow/stop
       const remaining = lane.length - vehicle.lanePosition;
       if (remaining < 20 && lane.successors.length > 0) {
@@ -694,12 +700,12 @@ export class TrafficSimulationEngine implements SimulationEngine {
     // Interpolate position along lane centerline
     const t = vehicle.lanePosition / lane.length;
     const position = this.interpolateLanePosition(lane, t);
-    
-    // Apply lateral offset
+    // Lock to centerline (ignore laneOffset to avoid lateral jitter/overlap)
+    vehicle.laneOffset = 0;
     const normal = this.getLaneNormal(lane, t);
     vehicle.position = {
-      x: position.x + normal.x * vehicle.laneOffset,
-      y: position.y + normal.y * vehicle.laneOffset,
+      x: position.x,
+      y: position.y,
     };
     
     // Update heading
