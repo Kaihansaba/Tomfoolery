@@ -400,6 +400,7 @@ function translate(key: TranslationKey, language: LanguageCode): string {
 let vehicleCounter = 0;
 const MIN_ZOOM = 0.00005;
 const MAX_ZOOM = 4;
+const INITIAL_VIEW_ZOOM = 2;
 let obstacleCounter = 50000;
 const MIN_ZOOM_SLIDER = MIN_ZOOM;
 const MAX_ZOOM_SLIDER = MAX_ZOOM;
@@ -2443,8 +2444,8 @@ export default function TrafficSimulationApp() {
   const dynamicActiveRef = useRef(false);
   const hasUserZoomedRef = useRef(false);
   const [showBackdrop, setShowBackdrop] = useState(true);
-  const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('osm');
-  const [zoomLevel, setZoomLevel] = useState(1);
+  const [backdropTheme, setBackdropTheme] = useState<keyof typeof BACKDROP_THEMES>('dark');
+  const [zoomLevel, setZoomLevel] = useState(INITIAL_VIEW_ZOOM);
   const roadStyle = useMemo(() => getRoadStyle(backdropTheme), [backdropTheme]);
   const [language, setLanguage] = useState<LanguageCode>('en');
   const [bulkCount, setBulkCount] = useState(10);
@@ -3088,8 +3089,7 @@ export default function TrafficSimulationApp() {
     if (network.lanes.size === 0 && network.geoReference) {
       viewRef.current = fallbackViewForGeoRef(network.geoReference, canvas);
     }
-    if (network.geoReference) {
-      // Center over Heilbronn on load
+    if (scenario === 'heilbronn_perchance' && network.geoReference) {
       const heilbronnCenter = geoToWorld(49.142, 9.22, network.geoReference);
       const scale = viewRef.current.scale;
       viewRef.current = {
@@ -3097,6 +3097,7 @@ export default function TrafficSimulationApp() {
         offsetX: canvas.width / 2 - heilbronnCenter.x * scale,
         offsetY: canvas.height / 2 - heilbronnCenter.y * scale,
       };
+      applyZoom(INITIAL_VIEW_ZOOM, { x: canvas.width / 2, y: canvas.height / 2 });
     }
     lastFrameRef.current = performance.now();
     hudAccumulatorRef.current = 0;
