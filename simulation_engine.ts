@@ -801,7 +801,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
     // Use size from the vehicle type definition; fall back to a sensible default
     const typeDef = DEFAULT_VEHICLE_TYPES[vehicle.type];
     const width = typeDef?.physical.width ?? 2.0;
-    const length = typeDef?.physical.length ?? 5.0;
+    const length = typeDef?.physical.length ?? 10.0;
     const halfWidth = width * 0.5;
     const halfLength = length * 0.5;
     
