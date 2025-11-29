@@ -2032,6 +2032,75 @@ function mergeNetworkFromJSON(target: RoadNetworkImpl, fragmentJSON: NetworkJSON
   target.rebuildLaneConnectivity();
 }
 
+function splitEdgeAtNode(
+  network: RoadNetworkImpl,
+  edge: Edge,
+  nodeId: string,
+  nodePos: Vector2D,
+  geomIndex: number
+) {
+  const geom = edge.geometry;
+  if (!geom || geom.length < 2) return;
+  if (geomIndex <= 0 || geomIndex >= geom.length - 1) return;
+
+  const firstGeom = geom.slice(0, geomIndex + 1);
+  const secondGeom = geom.slice(geomIndex);
+  firstGeom[firstGeom.length - 1] = nodePos;
+  secondGeom[0] = nodePos;
+
+  const makeId = (suffix: string) =>
+    `${edge.id}_split_${nodeId}_${suffix}_${Math.floor(Math.random() * 1e9)}`;
+
+  // Remove original lanes and detach edge from node adjacency
+  edge.lanes.forEach(l => network.lanes.delete(l.id));
+  const fromNode = network.getNode(edge.fromNode);
+  const toNode = network.getNode(edge.toNode);
+  if (fromNode) {
+    fromNode.outgoingEdges = fromNode.outgoingEdges.filter(id => id !== edge.id);
+  }
+  if (toNode) {
+    toNode.incomingEdges = toNode.incomingEdges.filter(id => id !== edge.id);
+  }
+  network.edges.delete(edge.id);
+
+  const cloneEdge = (id: string, fromNodeId: string, toNodeId: string, geometry: Vector2D[]): Edge => ({
+    ...edge,
+    id,
+    fromNode: fromNodeId,
+    toNode: toNodeId,
+    lanes: [], // regenerate lanes for the new geometry
+    geometry,
+  });
+
+  const left = cloneEdge(makeId('a'), edge.fromNode, nodeId, firstGeom);
+  const right = cloneEdge(makeId('b'), nodeId, edge.toNode, secondGeom);
+
+  network.addEdge(left);
+  network.addEdge(right);
+}
+
+function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 0.5) {
+  const tolSq = tolerance * tolerance;
+  const dangling = Array.from(network.nodes.values()).filter(n => n.outgoingEdges.length === 0);
+
+  for (const node of dangling) {
+    const pos = node.position;
+    for (const edge of network.edges.values()) {
+      const geom = edge.geometry;
+      if (!geom || geom.length < 2) continue;
+      const hitIdx = geom.findIndex(pt => {
+        const dx = pt.x - pos.x;
+        const dy = pt.y - pos.y;
+        return dx * dx + dy * dy <= tolSq;
+      });
+      if (hitIdx <= 0 || hitIdx >= geom.length - 1) continue;
+      splitEdgeAtNode(network, edge, node.id, pos, hitIdx);
+      break;
+    }
+  }
+  network.rebuildLaneConnectivity();
+}
+
 function updateTrafficLightTimers(
   lights: TrafficLight[],
   currentTime: number,
@@ -2185,6 +2254,7 @@ async function fetchChunkAndMerge(
     const data = (await res.json()) as OSMResponse;
     const fragmentJSON = overpassToNetworkJSON(data, geoRef, chunkKey);
     mergeNetworkFromJSON(runtime.network, fragmentJSON);
+    splitDanglingNodesIntoEdges(runtime.network);
     runtime.engine.network = runtime.network;
     if (markRoadsDirty) markRoadsDirty();
     let hotspotsChanged = false;
@@ -2865,6 +2935,7 @@ export default function TrafficSimulationApp() {
     // Build full network so heilbronnperchance.json is the initial scenario content
     const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
     const network = sourceNetwork;
+    splitDanglingNodesIntoEdges(network);
     const simConfig: SimulationConfig = {
       timeStep: 1 / 50, // slightly larger step for lighter compute
       targetFPS: 45, // lower render cadence to ease GPU/CPU load
