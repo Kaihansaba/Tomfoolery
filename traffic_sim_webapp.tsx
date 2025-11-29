@@ -5021,9 +5021,6 @@ export default function TrafficSimulationApp() {
             </button>
           </div>
         </div>
-        <div className="rounded-full bg-black/70 border border-orange-500/25 px-3 py-1 text-[11px] text-orange-100 shadow-[0_6px_20px_rgba(0,0,0,0.35)]">
-          {hud.fps.toFixed(0)} fps
-        </div>
       </div>
 
       {selection && (selectedNode || selectedEdge) && (
