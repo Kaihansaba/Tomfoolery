@@ -11,7 +11,6 @@ import {
   Shield,
   Eraser,
   GitBranchPlus,
-  TrafficCone,
   Eye,
   EyeOff,
   Trash,
@@ -39,6 +38,29 @@ import exampleNetworks from './example_networks.json';
 import testperchance from './testperchance.json';
 import { fastIndexLoad } from './src/utils/mapLoader';
 import { config as appConfig } from './src/config';
+
+const TrafficLightIcon = ({
+  size = 24,
+  color = 'currentColor',
+  ...rest
+}: React.SVGProps<SVGSVGElement> & { size?: number }) => (
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke={color}
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...rest}
+  >
+    <rect x="7" y="2" width="10" height="20" rx="2" />
+    <circle cx="12" cy="7" r="2.4" />
+    <circle cx="12" cy="12" r="2.4" />
+    <circle cx="12" cy="17" r="2.4" />
+  </svg>
+);
 import {
   startAddNodeAndEdge,
   cancelAddNodeAndEdge,
@@ -4089,11 +4111,21 @@ export default function TrafficSimulationApp() {
     setPanelContentMode(mode => (mode === 'stats' ? 'controls' : 'stats'));
   };
   const isAnalyticsMode = panelContentMode === 'stats';
+  const congestionCacheRef = useRef<{ timestamp: number; items: any[] } | null>(null);
   const congestionAreas = useMemo(() => {
+    if (!isAnalyticsMode) return [];
     const runtime = runtimeRef.current;
     const canvas = canvasRef.current;
     const view = viewRef.current;
     if (!runtime || !canvas || !view) return [];
+
+    const now = performance.now();
+    const last = congestionCacheRef.current;
+    const ONE_MINUTE_MS = 60_000;
+    if (last && now - last.timestamp < ONE_MINUTE_MS) {
+      return last.items;
+    }
+
     const visible = getViewBounds(view, canvas, 0);
     const network = runtime.network;
     const seenNames = new Set<string>();
@@ -4146,7 +4178,7 @@ export default function TrafficSimulationApp() {
       rec.speedSum += Math.max(0, vehicle.velocity);
     }
 
-    return Array.from(edgeData.values())
+    const items = Array.from(edgeData.values())
       .map(rec => ({
         ...rec,
         density: rec.vehicleCount / rec.lengthKm,
@@ -4157,7 +4189,10 @@ export default function TrafficSimulationApp() {
         return a.avgSpeedKmh - b.avgSpeedKmh;
       })
       .slice(0, 5);
-  }, [hud.time, hud.vehicles, hud.avgSpeed, hud.fps]);
+
+    congestionCacheRef.current = { timestamp: now, items };
+    return items;
+  }, [isAnalyticsMode, hud.time, hud.vehicles, hud.avgSpeed, hud.fps]);
 
   const goToCongestion = useCallback(
     (edgeId: string, bounds: Bounds) => {
@@ -4247,10 +4282,10 @@ export default function TrafficSimulationApp() {
                     setTrafficLightPlacementMode(false);
                   },
                   },
-                  {
+                {
                   key: 'light',
                   label: translateText('trafficLight'),
-                  icon: TrafficCone,
+                  icon: TrafficLightIcon,
                   action: () => {
                     setSpawnPointPlacementMode(false);
                     setObstaclePlacementMode(false);
@@ -4260,7 +4295,7 @@ export default function TrafficSimulationApp() {
                   },
                   {
                   key: 'addEdge',
-                  label: 'Add Node + Edge',
+                  label: 'Add roads + intersections',
                   icon: GitBranchPlus,
                   action: () => {
                     setToolMode('addEdge');
@@ -4285,7 +4320,7 @@ export default function TrafficSimulationApp() {
                   },
                   {
                   key: 'delete',
-                  label: 'Delete Nodes/Edges',
+                  label: 'Delete roads/intersections',
                   icon: Trash,
                   action: () => {
                     setToolMode('delete');
@@ -4297,7 +4332,7 @@ export default function TrafficSimulationApp() {
                   },
                   {
                     key: 'edges',
-                    label: showRoadEdges ? translateText('hideEdges') : translateText('showEdges'),
+                    label: showRoadEdges ? 'Hide roads' : 'Show roads',
                     icon: showRoadEdges ? EyeOff : Eye,
                     action: () => setShowRoadEdges(v => !v),
                   },
