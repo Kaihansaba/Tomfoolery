@@ -495,8 +495,33 @@ export class TrafficSimulationEngine implements SimulationEngine {
           vehicle.acceleration = Math.min(vehicle.acceleration, -4);
         }
       }
-      
+
+      // If we would leave the lane this step, only transition if a successor has space.
       if (vehicle.lanePosition > lane.length) {
+        const minGap = 8;
+        let successorWithSpace: Lane | null = null;
+        for (const succId of lane.successors) {
+          const succLane = this.network.getLane(succId);
+          if (!succLane) continue;
+          let nearest: number | null = null;
+          for (const v of this.vehicles.values()) {
+            if (v.laneId !== succId) continue;
+            if (nearest === null || v.lanePosition < nearest) nearest = v.lanePosition;
+          }
+          if (nearest === null || nearest > minGap) {
+            successorWithSpace = succLane;
+            break;
+          }
+        }
+        if (!successorWithSpace && lane.successors.length > 0) {
+          // Hold position at end of lane and stop; try again next frame
+          vehicle.lanePosition = Math.max(0, lane.length - 0.5);
+          vehicle.velocity = 0;
+          vehicle.acceleration = 0;
+          this.updateGlobalPosition(vehicle, lane);
+          continue;
+        }
+
         // Vehicle has left this lane - handle successor
         this.handleLaneTransition(vehicle, lane);
         lane = this.network.getLane(vehicle.laneId) || lane;
@@ -801,7 +826,7 @@ export class TrafficSimulationEngine implements SimulationEngine {
     // Use size from the vehicle type definition; fall back to a sensible default
     const typeDef = DEFAULT_VEHICLE_TYPES[vehicle.type];
     const width = typeDef?.physical.width ?? 2.0;
-    const length = typeDef?.physical.length ?? 5.0;
+    const length = typeDef?.physical.length ?? 10.0;
     const halfWidth = width * 0.5;
     const halfLength = length * 0.5;
     
