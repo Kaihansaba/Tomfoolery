@@ -1784,6 +1784,24 @@ function drawScene(
       for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
       ctx.stroke();
     }
+
+    // Highlight selected start node for add-edge tool
+    if (addToolSelection) {
+      const node = network.getNode(addToolSelection);
+      if (node) {
+        const screen = worldToScreen(view, node.position);
+        ctx.save();
+        ctx.translate(screen.x, screen.y);
+        ctx.beginPath();
+        ctx.fillStyle = 'rgba(168,85,247,0.85)';
+        ctx.strokeStyle = '#a855f7';
+        ctx.lineWidth = 3;
+        ctx.arc(0, 0, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
     ctx.restore();
   }
 
@@ -2299,6 +2317,7 @@ export default function TrafficSimulationApp() {
   const [simulationMode, setSimulationMode] = useState<'micro' | 'macro'>('micro');
   const [toolMode, setToolMode] = useState<'none' | 'addEdge' | 'subnetwork' | 'delete'>('none');
   const [addToolState, setAddToolState] = useState<AddNodeAndEdgeState>(() => startAddNodeAndEdge());
+  const [addToolSelection, setAddToolSelection] = useState<string | null>(null);
   const [subnetworkSelection, setSubnetworkSelection] = useState<Set<string>>(new Set());
   const customNetworkRef = useRef<NetworkJSON | null>(null);
   const [customNetworkName, setCustomNetworkName] = useState<string>('Uploaded map');
@@ -2401,6 +2420,7 @@ export default function TrafficSimulationApp() {
         applySelection(undefined);
         setToolMode('none');
         setAddToolState(startAddNodeAndEdge());
+        setAddToolSelection(null);
         setSubnetworkSelection(new Set());
       }
     };
@@ -3540,6 +3560,9 @@ export default function TrafficSimulationApp() {
           requestRedrawRef.current.fn();
           if (res.newEdge) {
             setToolMode('none');
+            setAddToolSelection(null);
+          } else if (res.newNode) {
+            setAddToolSelection(res.newNode.id);
           }
         }
         return;
