@@ -3711,9 +3711,10 @@ export default function TrafficSimulationApp() {
       </div>
 
       <div
-        className={`absolute left-6 right-6 sm:right-auto sm:w-[460px] max-w-[560px] z-30 transition-all duration-500 ${
-          panelOpen ? 'top-4 bottom-4 pointer-events-auto' : 'bottom-6 pointer-events-none'
+        className={`absolute top-4 left-4 w-[90vw] sm:w-[460px] max-w-[560px] z-30 transition-transform transition-opacity duration-400 ease-out ${
+          panelOpen ? 'translate-y-0 opacity-100' : '-translate-y-8 opacity-0 pointer-events-none'
         }`}
+        style={{ willChange: 'transform, opacity' }}
       >
         <div
           className={`relative rounded-[24px] border border-orange-500/25 bg-black/80 backdrop-blur-2xl shadow-[0_25px_60px_rgba(0,0,0,0.55)] transition-all duration-500 ${
@@ -3976,7 +3977,7 @@ export default function TrafficSimulationApp() {
               </div>
 
               <div className="grid sm:grid-cols-1 gap-3">
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3">
+                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3 transition-colors transition-shadow duration-300 hover:bg-orange-500/10 hover:border-orange-400/40 hover:shadow-[0_10px_35px_rgba(255,121,48,0.25)]">
                   <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
                     <span>{translateText('populationTarget')}</span>
                     <span className="font-mono text-white">
@@ -4009,7 +4010,7 @@ export default function TrafficSimulationApp() {
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                 <button
                   onClick={() => setShowBackdrop(v => !v)}
-                  className={`w-full rounded-full px-4 py-2 text-sm border transition ${
+                  className={`w-full rounded-full px-4 py-2 text-sm border transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] ${
                     showBackdrop
                       ? 'border-orange-400 bg-orange-500/20'
                       : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
@@ -4020,7 +4021,7 @@ export default function TrafficSimulationApp() {
                 <select
                   value={language}
                   onChange={e => setLanguage(e.target.value as LanguageCode)}
-                  className="w-full rounded-full px-3 py-2 text-sm border border-orange-500/25 bg-black/70 hover:border-orange-400 transition text-orange-100"
+                  className="w-full rounded-full px-3 py-2 text-sm border border-orange-500/30 bg-gradient-to-r from-black/80 via-black/70 to-black/80 hover:border-orange-400 hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] transition text-orange-100 focus:outline-none focus:border-orange-300"
                 >
                   <option value="en">English</option>
                   <option value="de">Deutsch</option>
@@ -4032,7 +4033,7 @@ export default function TrafficSimulationApp() {
                 </select>
                 <button
                   onClick={() => applyZoom(1)}
-                  className="w-full rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition"
+                  className="w-full rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)]"
                 >
                   {translateText('resetZoom')}
                 </button>
