@@ -1936,8 +1936,6 @@ function overpassToNetworkJSON(
   }
 
   for (const node of nodeMap.values()) {
-    // Skip nodes that were only referenced by ignored highway types
-    if (!nodeUseCount[node.id]) continue;
     const pos = geoToWorld(node.lat, node.lon, geoRef);
     nodes.push({
       id: `chunk_${chunkKey}_node_${node.id}`,
