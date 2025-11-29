@@ -1786,8 +1786,8 @@ function drawScene(
     }
 
     // Highlight selected start node for add-edge tool
-    if (addToolSelection) {
-      const node = network.getNode(addToolSelection);
+    if (pendingAddNodeId) {
+      const node = network.getNode(pendingAddNodeId);
       if (node) {
         const screen = worldToScreen(view, node.position);
         ctx.save();
@@ -1936,8 +1936,6 @@ function overpassToNetworkJSON(
   }
 
   for (const node of nodeMap.values()) {
-    // Skip nodes that were only referenced by ignored highway types
-    if (!nodeUseCount[node.id]) continue;
     const pos = geoToWorld(node.lat, node.lon, geoRef);
     nodes.push({
       id: `chunk_${chunkKey}_node_${node.id}`,
@@ -2408,25 +2406,6 @@ export default function TrafficSimulationApp() {
     const next = themes[(idx + 1) % themes.length];
     setBackdropTheme(next);
   }, [backdropTheme]);
-
-  const activateAddEdgeTool = useCallback(() => {
-    const selectedNodeId =
-      selectionRef.current?.type === 'node' ? selectionRef.current.id : null;
-
-    setAddToolSelection(selectedNodeId);
-    setAddToolState(() => {
-      const next = startAddNodeAndEdge();
-      if (selectedNodeId) {
-        next.pendingNodeId = selectedNodeId;
-      }
-      return next;
-    });
-    setToolMode('addEdge');
-    setSpawnPointPlacementMode(false);
-    setObstaclePlacementMode(false);
-    setObstacleRemovalMode(false);
-    setTrafficLightPlacementMode(false);
-  }, []);
 
 
   useEffect(() => {
@@ -3952,7 +3931,14 @@ export default function TrafficSimulationApp() {
                   key: 'addEdge',
                   label: 'Add Node + Edge',
                   icon: GitBranchPlus,
-                  action: activateAddEdgeTool,
+                  action: () => {
+                    setToolMode('addEdge');
+                    setAddToolState(startAddNodeAndEdge());
+                    setSpawnPointPlacementMode(false);
+                    setObstaclePlacementMode(false);
+                    setObstacleRemovalMode(false);
+                    setTrafficLightPlacementMode(false);
+                  },
                   },
                   {
                   key: 'subnetwork',
