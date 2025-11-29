@@ -2116,7 +2116,7 @@ function splitEdgeAtNode(
   network.addEdge(right);
 }
 
-function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 0.5) {
+function splitDanglingNodesIntoEdges(network: RoadNetworkImpl, tolerance = 1.5) {
   const tolSq = tolerance * tolerance;
   const dangling = Array.from(network.nodes.values()).filter(n => n.outgoingEdges.length === 0);
 
