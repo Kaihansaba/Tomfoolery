@@ -6,7 +6,7 @@ import {
   Minus,
   Zap,
   Search,
-  Sparkles,
+  Compass,
   MapPin,
   Shield,
   Eraser,
@@ -16,6 +16,7 @@ import {
   EyeOff,
   Trash,
   Clock3,
+  LineChart,
 } from 'lucide-react';
 import { TrafficSimulationEngine } from './simulation_engine';
 import { RoadNetworkImpl } from './road_network_impl';
@@ -133,6 +134,16 @@ type TrafficLight = {
   state: TrafficLightState;
   timerSeconds: number; // 0 for manual
   nextSwitchTime: number; // simulation time when to toggle, if timer > 0
+};
+
+type StatSample = {
+  time: number;
+  vehicles: number;
+  avgSpeedKmh: number;
+  density: number;
+  fps: number;
+  spawnRate: number;
+  despawnRate: number;
 };
 
 type RoadStyle = {
@@ -1011,6 +1022,14 @@ function findNearestRoutableNodeId(
     }
   }
   return best;
+}
+
+function computeTotalLaneLengthKm(network: RoadNetworkImpl): number {
+  let sum = 0;
+  for (const lane of network.lanes.values()) {
+    sum += lane.length || 0;
+  }
+  return sum / 1000;
 }
 
 function createVehicleState(lane: Lane, position: number, category?: VehicleCategory): VehicleState {
@@ -2391,8 +2410,16 @@ export default function TrafficSimulationApp() {
     avgSpeed: 0,
     fps: 0,
   });
-  const statModes: StatMode[] = ['basic', 'extended', 'advanced'];
-  const [statModeIndex, setStatModeIndex] = useState(0);
+  const [panelContentMode, setPanelContentMode] = useState<'controls' | 'stats'>('controls');
+  const statHistoryRef = useRef<StatSample[]>([]);
+  const [, forceStatHistoryRender] = useState(0);
+  const statsCountersRef = useRef<{ spawned: number; despawned: number }>({ spawned: 0, despawned: 0 });
+  const lastStatSampleRef = useRef<{ time: number; spawnCount: number; despawnCount: number }>({
+    time: 0,
+    spawnCount: 0,
+    despawnCount: 0,
+  });
+  const totalLaneLengthKmRef = useRef<number>(0);
   const [panelOpen, setPanelOpen] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [hoveredTool, setHoveredTool] = useState<{ label: string; top: number } | null>(null);
@@ -2433,15 +2460,20 @@ export default function TrafficSimulationApp() {
   const pendingIndexRef = useRef<Promise<any> | null>(null);
   const laneCount = runtimeRef.current?.network.lanes.size ?? 0;
   const avgSpeedKmh = hud.avgSpeed * 3.6;
-  const totalLaneLengthKm = (() => {
-    const runtime = runtimeRef.current;
-    if (!runtime) return undefined;
-    let sum = 0;
-    for (const lane of runtime.network.lanes.values()) {
-      sum += lane.length || 0;
-    }
-    return sum > 0 ? sum / 1000 : 0;
-  })();
+  const totalLaneLengthKm =
+    totalLaneLengthKmRef.current > 0
+      ? totalLaneLengthKmRef.current
+      : (() => {
+          const runtime = runtimeRef.current;
+          if (!runtime) return undefined;
+          let sum = 0;
+          for (const lane of runtime.network.lanes.values()) {
+            sum += lane.length || 0;
+          }
+          const km = sum > 0 ? sum / 1000 : 0;
+          totalLaneLengthKmRef.current = km;
+          return km;
+        })();
   const trafficDensityPerKm =
     totalLaneLengthKm && totalLaneLengthKm > 0 ? hud.vehicles / totalLaneLengthKm : undefined;
 
@@ -2563,6 +2595,29 @@ export default function TrafficSimulationApp() {
     }
   }, []);
 
+  const recordStatSample = useCallback(
+    (sample: Omit<StatSample, 'spawnRate' | 'despawnRate'>) => {
+      const prev = lastStatSampleRef.current;
+      const counters = statsCountersRef.current;
+      const dt = sample.time - prev.time;
+      const spawnDelta = counters.spawned - prev.spawnCount;
+      const despawnDelta = counters.despawned - prev.despawnCount;
+      const spawnRate = dt > 0 ? (spawnDelta / dt) * 60 : 0;
+      const despawnRate = dt > 0 ? (despawnDelta / dt) * 60 : 0;
+      const entry: StatSample = { ...sample, spawnRate, despawnRate };
+      const history = statHistoryRef.current;
+      history.push(entry);
+      const MAX_STAT_SAMPLES = 180; // keep roughly 45s at 0.25s cadence
+      if (history.length > MAX_STAT_SAMPLES) history.shift();
+      lastStatSampleRef.current = {
+        time: sample.time,
+        spawnCount: counters.spawned,
+        despawnCount: counters.despawned,
+      };
+      forceStatHistoryRender(v => v + 1);
+    },
+    [forceStatHistoryRender]
+  );
 
   useEffect(() => {
     if (backdropContextRef.current) {
@@ -2936,6 +2991,7 @@ export default function TrafficSimulationApp() {
     const sourceNetwork = RoadNetworkImpl.fromJSON(networkJSON);
     const network = sourceNetwork;
     splitDanglingNodesIntoEdges(network);
+    totalLaneLengthKmRef.current = computeTotalLaneLengthKm(network);
     const simConfig: SimulationConfig = {
       timeStep: 1 / 50, // slightly larger step for lighter compute
       targetFPS: 45, // lower render cadence to ease GPU/CPU load
@@ -2945,6 +3001,22 @@ export default function TrafficSimulationApp() {
     };
 
     const engine = new TrafficSimulationEngine(network, simConfig);
+    const baseAddVehicle = engine.addVehicle.bind(engine);
+    const baseRemoveVehicle = engine.removeVehicle.bind(engine);
+    statsCountersRef.current = { spawned: 0, despawned: 0 };
+    lastStatSampleRef.current = { time: 0, spawnCount: 0, despawnCount: 0 };
+    statHistoryRef.current = [];
+    forceStatHistoryRender(v => v + 1);
+    engine.addVehicle = (vehicle: VehicleState) => {
+      statsCountersRef.current.spawned += 1;
+      baseAddVehicle(vehicle);
+    };
+    engine.removeVehicle = (id: string) => {
+      if (engine.vehicles.has(id)) {
+        statsCountersRef.current.despawned += 1;
+      }
+      baseRemoveVehicle(id);
+    };
     Object.entries(DEFAULT_VEHICLE_TYPES).forEach(([key, typeConfig]) => {
       engine.registerDriverModel(key as VehicleCategory, new IDMModel(typeConfig.driver));
     });
@@ -3270,11 +3342,21 @@ export default function TrafficSimulationApp() {
         const fps = shouldRender && hudAccumulatorRef.current > 0
           ? frameCountRef.current / hudAccumulatorRef.current
           : hud.fps;
+        const laneKm = totalLaneLengthKmRef.current;
+        const density = laneKm > 0 ? vehicles.length / laneKm : 0;
+        const simTime = runtime.engine.currentTime;
 
         setHud({
-          time: runtime.engine.currentTime,
+          time: simTime,
           vehicles: vehicles.length,
           avgSpeed,
+          fps,
+        });
+        recordStatSample({
+          time: simTime,
+          vehicles: vehicles.length,
+          avgSpeedKmh: avgSpeed * 3.6,
+          density,
           fps,
         });
 
@@ -3303,7 +3385,7 @@ export default function TrafficSimulationApp() {
       isRunningRef.current = false;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
-  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle]);
+  }, [isRunning, timeScale, spawnPointPlacementMode, showRoadEdges, simulationMode, toolMode, subnetworkSelection, addToolState.pendingNodeId, roadStyle, recordStatSample]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -3947,30 +4029,6 @@ export default function TrafficSimulationApp() {
       }
     : { nodes: 0, edges: 0, lanes: 0 };
 
-  const statCollections: Record<
-    StatMode,
-    { label: string; value: string; accent?: boolean }[]
-  > = {
-    basic: [
-      { label: 'Sim time', value: `${hud.time.toFixed(1)} s` },
-      { label: 'Vehicles', value: `${hud.vehicles}` },
-    ],
-    extended: [
-      { label: 'Avg speed', value: `${(hud.avgSpeed * 3.6).toFixed(1)} km/h` },
-      { label: 'Zoom', value: `${zoomLevel.toFixed(2)}x` },
-      { label: 'Spawn points', value: `${spawnPointsRef.current.length}` },
-      { label: 'Simulation speed', value: `${timeScale.toFixed(2)}x` },
-    ],
-    advanced: [
-      { label: 'Nodes', value: `${networkSnapshot.nodes}` },
-      { label: 'Edges', value: `${networkSnapshot.edges}` },
-      { label: 'Lanes', value: `${networkSnapshot.lanes}` },
-      { label: 'Chunks', value: `${dynamicChunksRef.current.size}` },
-    ],
-  };
-
-  const statsForMode = statCollections[statModes[statModeIndex]];
-
   const trafficPresets: Record<TrafficLevel, { label: string; burst: number }> = {
     low: { label: 'Low', burst: 8 },
     mid: { label: 'Mid', burst: 24 },
@@ -3978,9 +4036,19 @@ export default function TrafficSimulationApp() {
   };
   const trafficLevels: TrafficLevel[] = ['low', 'mid', 'high'];
 
-  const handleModeCycle = () => {
-    setStatModeIndex(i => (i + 1) % statModes.length);
-  };
+  const buildSparklinePath = useCallback((values: number[], width = 240, height = 72) => {
+    if (!values || values.length === 0) return '';
+    const min = Math.min(...values);
+    const max = Math.max(...values);
+    const range = max - min || 1;
+    return values
+      .map((v, i) => {
+        const x = (i / Math.max(values.length - 1, 1)) * width;
+        const y = height - ((v - min) / range) * height;
+        return `${i === 0 ? 'M' : 'L'}${x.toFixed(2)},${y.toFixed(2)}`;
+      })
+      .join(' ');
+  }, []);
 
   const adjustZoom = (delta: number) => {
     const next = clamp(zoomLevel + delta, MIN_ZOOM_SLIDER, MAX_ZOOM_SLIDER);
@@ -4005,6 +4073,102 @@ export default function TrafficSimulationApp() {
   };
 
   const overlayRight = '1rem';
+  const statHistory = statHistoryRef.current;
+  const latestSample = statHistory[statHistory.length - 1];
+  const prevSample = statHistory[statHistory.length - 2];
+  const vehicleDelta = latestSample && prevSample ? latestSample.vehicles - prevSample.vehicles : 0;
+  const speedDelta =
+    latestSample && prevSample ? latestSample.avgSpeedKmh - prevSample.avgSpeedKmh : 0;
+  const densityDelta = latestSample && prevSample ? latestSample.density - prevSample.density : 0;
+  const vehicleSparkPath = buildSparklinePath(statHistory.map(s => s.vehicles));
+  const speedSparkPath = buildSparklinePath(statHistory.map(s => s.avgSpeedKmh));
+  const densitySparkPath = buildSparklinePath(statHistory.map(s => s.density));
+  const fpsSparkPath = buildSparklinePath(statHistory.map(s => s.fps));
+  const togglePanelMode = () => {
+    setPanelOpen(true);
+    setPanelContentMode(mode => (mode === 'stats' ? 'controls' : 'stats'));
+  };
+  const isAnalyticsMode = panelContentMode === 'stats';
+  const congestionAreas = useMemo(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    const view = viewRef.current;
+    if (!runtime || !canvas || !view) return [];
+    const visible = getViewBounds(view, canvas, 0);
+    const network = runtime.network;
+    const seenNames = new Set<string>();
+    const edgeData = new Map<
+      string,
+      {
+        edgeId: string;
+        name: string;
+        lengthKm: number;
+        bounds: Bounds;
+        vehicleCount: number;
+        speedSum: number;
+      }
+    >();
+
+    for (const vehicle of runtime.engine.vehicles.values()) {
+      const lane = network.getLane(vehicle.laneId);
+      if (!lane) continue;
+      const edge = network.getEdge(lane.edgeId);
+      if (!edge) continue;
+      let rec = edgeData.get(edge.id);
+      if (!rec) {
+        const polyline = getEdgePolyline(network, edge.id);
+        if (!polyline) continue;
+        const b = polylineBounds(polyline);
+        if (!boundsIntersect(b, visible)) continue;
+        const lengthMeters = lane.length || polylineLength(polyline);
+        const lengthKm = Math.max(0.001, lengthMeters / 1000);
+        const nameRaw =
+          edge.name ||
+          (edge.metadata as any)?.name ||
+          (edge as any)?.properties?.name ||
+          `Edge ${edge.id}`;
+        const name = String(nameRaw);
+        if (seenNames.has(name)) {
+          continue;
+        }
+        rec = {
+          edgeId: edge.id,
+          name: String(name),
+          lengthKm,
+          bounds: b,
+          vehicleCount: 0,
+          speedSum: 0,
+        };
+        edgeData.set(edge.id, rec);
+        seenNames.add(name);
+      }
+      rec.vehicleCount += 1;
+      rec.speedSum += Math.max(0, vehicle.velocity);
+    }
+
+    return Array.from(edgeData.values())
+      .map(rec => ({
+        ...rec,
+        density: rec.vehicleCount / rec.lengthKm,
+        avgSpeedKmh: rec.vehicleCount > 0 ? (rec.speedSum / rec.vehicleCount) * 3.6 : 0,
+      }))
+      .sort((a, b) => {
+        if (b.density !== a.density) return b.density - a.density;
+        return a.avgSpeedKmh - b.avgSpeedKmh;
+      })
+      .slice(0, 5);
+  }, [hud.time, hud.vehicles, hud.avgSpeed, hud.fps]);
+
+  const goToCongestion = useCallback(
+    (edgeId: string, bounds: Bounds) => {
+      fitViewToBounds(bounds);
+      const runtime = runtimeRef.current;
+      const edge = runtime?.network.getEdge(edgeId);
+      const direction = edge ? computeEdgeDirection(edge) : 'forward';
+      applySelection({ type: 'edge', id: edgeId, direction });
+    },
+    [fitViewToBounds, applySelection]
+  );
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-[#050505] text-white">
@@ -4018,11 +4182,15 @@ export default function TrafficSimulationApp() {
 
       <div className="absolute top-6 right-6 flex flex-col items-end gap-3 z-30">
         <button
-          onClick={handleModeCycle}
+          onClick={togglePanelMode}
           className="w-14 h-14 rounded-full bg-gradient-to-br from-orange-500 to-orange-600 shadow-[0_10px_30px_rgba(255,121,48,0.35)] flex items-center justify-center border border-orange-400/40 hover:scale-[1.04] active:scale-[0.98] transition"
-          aria-label="Cycle stat modes"
+          aria-label={isAnalyticsMode ? 'Show controls' : 'Show statistics'}
         >
-          <Sparkles className="text-black drop-shadow" size={22} />
+          {isAnalyticsMode ? (
+            <LineChart className="text-black drop-shadow" size={22} />
+          ) : (
+            <Compass className="text-black drop-shadow" size={22} />
+          )}
         </button>
         <div className="relative">
           <button
@@ -4252,22 +4420,185 @@ export default function TrafficSimulationApp() {
                   <div className="text-[11px] uppercase tracking-[0.24em] text-orange-200/70">
                     Simulation Suite
                   </div>
-                  {panelOpen ? (
-                    <div className="text-2xl font-semibold leading-tight">
-                      <span className="text-white">Tra</span>
-                      <span className="text-orange-400">Fixed</span>
-                    </div>
-                  ) : (
-                    <div className="text-2xl font-semibold leading-tight">
-                      <span className="text-white">Tra</span>
-                      <span className="text-orange-400">Fixed</span>
-                    </div>
-                  )}
+                  <div className="text-2xl font-semibold leading-tight">
+                    <span className="text-white">Tra</span>
+                    <span className="text-orange-400">Fixed</span>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <div className="mt-6 space-y-3">
+            {panelContentMode === 'stats' ? (
+              <div className="mt-6 space-y-4 rounded-3xl border border-orange-500/30 bg-black/50 px-4 py-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] uppercase tracking-[0.18em] text-orange-200/70">
+                      Live analytics
+                    </div>
+                    <div className="text-[11px] text-orange-100/70">
+                      Updated from the simulation loop every ~250ms
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-black/60 border border-orange-500/30 px-2.5 py-2 space-y-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Vehicle load</span>
+                      <span className="text-[11px] text-orange-100/70">Last ~45s</span>
+                    </div>
+                    <div className="flex items-baseline gap-3">
+                      <div className="text-3xl font-semibold">
+                        {latestSample ? latestSample.vehicles : hud.vehicles}
+                      </div>
+                      <div className="text-xs text-orange-100/70">
+                        Peak {statHistory.length ? Math.max(...statHistory.map(s => s.vehicles)) : 0}
+                      </div>
+                    </div>
+                    <svg viewBox="0 0 260 80" className="w-full h-12">
+                      <defs>
+                        <linearGradient id="vehGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#fb923c" stopOpacity="0.9" />
+                          <stop offset="100%" stopColor="#fb923c" stopOpacity="0.05" />
+                        </linearGradient>
+                      </defs>
+                      <path d={vehicleSparkPath} fill="none" stroke="#fb923c" strokeWidth="2.5" strokeLinecap="round" />
+                      {vehicleSparkPath && (
+                        <path
+                          d={`${vehicleSparkPath} L260,80 L0,80 Z`}
+                          fill="url(#vehGrad)"
+                          opacity={0.25}
+                        />
+                      )}
+                    </svg>
+                  </div>
+                  <div className="rounded-2xl bg-black/60 border border-orange-500/30 px-2.5 py-2 space-y-1.5 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Speed + density</span>
+                      <span className="text-[11px] text-orange-100/70">
+                        {selectedSpeedLimitKmh ? `${selectedSpeedLimitKmh.toFixed(0)} km/h limit` : 'Network mix'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline gap-3">
+                      <div className="text-3xl font-semibold">
+                        {(latestSample?.avgSpeedKmh ?? avgSpeedKmh).toFixed(1)} km/h
+                      </div>
+                      {latestSample && (
+                        <div className="text-xs text-orange-100/70">
+                          Density {latestSample.density.toFixed(1)} veh/km
+                        </div>
+                      )}
+                    </div>
+                    <svg viewBox="0 0 260 80" className="w-full h-12">
+                      <defs>
+                        <linearGradient id="spdGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.9" />
+                          <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.05" />
+                        </linearGradient>
+                        <linearGradient id="densGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#a855f7" stopOpacity="0.9" />
+                          <stop offset="100%" stopColor="#a855f7" stopOpacity="0.05" />
+                        </linearGradient>
+                      </defs>
+                      <path d={speedSparkPath} fill="none" stroke="#22d3ee" strokeWidth="2.5" strokeLinecap="round" />
+                      {speedSparkPath && (
+                        <path
+                          d={`${speedSparkPath} L260,80 L0,80 Z`}
+                          fill="url(#spdGrad)"
+                          opacity={0.25}
+                        />
+                      )}
+                      <path d={densitySparkPath} fill="none" stroke="#a855f7" strokeWidth="2" strokeLinecap="round" opacity={0.8} />
+                      {densitySparkPath && (
+                        <path
+                          d={`${densitySparkPath} L260,80 L0,80 Z`}
+                          fill="url(#densGrad)"
+                          opacity={0.15}
+                        />
+                      )}
+                    </svg>
+                  </div>
+                </div>
+
+                <div className="grid sm:grid-cols-1 gap-3">
+                  <div className="rounded-2xl bg-white/5 border border-orange-500/25 px-2.5 py-2 space-y-1.5 sm:col-span-2">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Performance + network</span>
+                      <span className="text-[11px] text-orange-100/70">fps + inventory</span>
+                    </div>
+                    <div className="flex items-baseline gap-3">
+                      <div className="text-3xl font-semibold">
+                        {(latestSample?.fps ?? hud.fps).toFixed(0)} fps
+                      </div>
+                      <div className="text-xs text-orange-100/70">
+                        Chunks {dynamicChunksRef.current.size}
+                      </div>
+                    </div>
+                    <svg viewBox="0 0 260 80" className="w-full h-12">
+                      <defs>
+                        <linearGradient id="fpsGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#34d399" stopOpacity="0.9" />
+                          <stop offset="100%" stopColor="#34d399" stopOpacity="0.05" />
+                        </linearGradient>
+                      </defs>
+                      <path d={fpsSparkPath} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinecap="round" />
+                      {fpsSparkPath && (
+                        <path
+                          d={`${fpsSparkPath} L260,80 L0,80 Z`}
+                          fill="url(#fpsGrad)"
+                          opacity={0.2}
+                        />
+                      )}
+                    </svg>
+                    <div className="grid grid-cols-3 gap-2 text-[11px] text-orange-100/80">
+                      <div className="rounded-xl bg-black/60 border border-orange-500/25 px-2 py-2">
+                        <div className="uppercase tracking-wide text-[10px] text-orange-200/80">Nodes</div>
+                        <div className="font-semibold text-white">{networkSnapshot.nodes}</div>
+                      </div>
+                      <div className="rounded-xl bg-black/60 border border-orange-500/25 px-2 py-2">
+                        <div className="uppercase tracking-wide text-[10px] text-orange-200/80">Edges</div>
+                        <div className="font-semibold text-white">{networkSnapshot.edges}</div>
+                      </div>
+                      <div className="rounded-xl bg-black/60 border border-orange-500/25 px-2 py-2">
+                        <div className="uppercase tracking-wide text-[10px] text-orange-200/80">Lanes</div>
+                        <div className="font-semibold text-white">{networkSnapshot.lanes}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl bg-black/60 border border-orange-500/30 px-3.5 py-4 space-y-3 shadow-[0_10px_30px_rgba(0,0,0,0.35)]">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Key Congestion Areas</span>
+                      <span className="text-[11px] text-orange-100/70">In view</span>
+                    </div>
+                    <div className="space-y-2">
+                      {congestionAreas.length === 0 && (
+                        <div className="text-sm text-orange-100/70">No congestion detected in view.</div>
+                      )}
+                      {congestionAreas.map(area => (
+                        <button
+                          key={area.edgeId}
+                          onClick={() => goToCongestion(area.edgeId, area.bounds)}
+                          className="w-full text-left rounded-xl border border-orange-500/20 bg-black/60 px-3 py-2 hover:border-orange-400/60 transition"
+                        >
+                          <div className="flex items-center justify-between text-sm text-white">
+                            <span className="font-semibold truncate">{area.name}</span>
+                            <span className="text-xs text-orange-200/80">
+                              {area.density.toFixed(1)} veh/km
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between text-xs text-orange-100/80">
+                            <span>Avg speed {(area.avgSpeedKmh || 0).toFixed(1)} km/h</span>
+                            <span className="text-orange-300">{area.vehicleCount} vehicles</span>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="mt-6 space-y-3">
                   <div className="flex items-center gap-2 rounded-2xl bg-[#0b0b0f] border border-orange-500/30 px-3 py-2 shadow-inner">
                     <Search size={16} className="text-orange-300" />
                     <input
@@ -4284,269 +4615,271 @@ export default function TrafficSimulationApp() {
                       className="flex-1 bg-transparent outline-none text-sm placeholder:text-orange-100/50"
                     />
                   </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => setIsRunning(prev => !prev)}
-                  className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
-                >
-                  {isRunning ? <Pause size={14} /> : <Play size={14} />}
-                  <span>{isRunning ? translateText('pause') : translateText('play')}</span>
-                </button>
-                <button
-                  onClick={handleReset}
-                  className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm font-semibold hover:border-orange-400 transition"
-                >
-                  {translateText('reset')}
-                </button>
-              </div>
-              <datalist id="street-suggestions">
-                {streetSuggestions.map(name => (
-                  <option key={name} value={name} />
-                ))}
-              </datalist>
-              {panelOpen && (
-                <>
-                  <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-2">
-                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                      <span>Statistics</span>
-                    </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
-                          Active vehicles
-                        </div>
-                        <div className="text-lg font-semibold">{hud.vehicles}</div>
-                      </div>
-                      <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
-                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
-                          Traffic density
-                        </div>
-                        <div className="text-lg font-semibold">
-                          {trafficDensityPerKm !== undefined
-                            ? `${trafficDensityPerKm.toFixed(1)} veh/km`
-                            : '–'}
-                        </div>
-                      </div>
-                      <div
-                        className={`rounded-2xl px-3 py-2 border ${
-                          selectedSpeedLimitKmh
-                            ? avgSpeedKmh < selectedSpeedLimitKmh * 0.5
-                              ? 'bg-red-500/15 border-red-400/40'
-                              : avgSpeedKmh < selectedSpeedLimitKmh * 0.8
-                              ? 'bg-amber-500/15 border-amber-400/40'
-                              : 'bg-emerald-500/15 border-emerald-400/40'
-                            : 'bg-black/60 border-orange-500/20'
-                        }`}
-                      >
-                        <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
-                          Average vehicle speed
-                        </div>
-                        <div className="text-lg font-semibold">
-                          {avgSpeedKmh.toFixed(1)} km/h
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-
-            <div
-              className={`transition-all duration-500 ${
-                panelOpen
-                  ? 'opacity-100 translate-y-0 mt-4 space-y-4'
-                  : 'opacity-0 -translate-y-2 pointer-events-none h-0 overflow-hidden'
-              }`}
-            >
-              <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-3">
-                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                    <span>Controls</span>
-                  </div>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
-                    <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
-                    <select
-                      value={scenario}
-                      onChange={e => setScenario(e.target.value as ScenarioKey)}
-                      className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setIsRunning(prev => !prev)}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 px-3 py-2 text-sm font-semibold shadow-[0_10px_30px_rgba(255,121,48,0.35)] hover:translate-y-[-1px] transition"
                     >
-                      <option value="simple_highway">Highway with ramps</option>
-                      <option value="urban_intersection">Signalized intersection</option>
-                      <option value="roundabout">Four-arm roundabout</option>
-                      <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
-                      <option value="test_perchance">Test Perchance (full)</option>
-                      {customNetworkRef.current && (
-                        <option value="uploaded_custom">{customNetworkName}</option>
-                      )}
-                    </select>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
-                      >
-                        Import JSON
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept=".json,application/json"
-                        className="hidden"
-                        onChange={async e => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          try {
-                            const text = await file.text();
-                            const parsed = JSON.parse(text);
-                            const coerced = coerceNetworkJSON(parsed);
-                            if (!coerced) {
-                              console.warn('Uploaded file is not a valid network JSON');
-                              return;
-                            }
-                            customNetworkRef.current = coerced;
-                            setCustomNetworkName(file.name || 'Uploaded map');
-                            setScenario('uploaded_custom');
-                            initialize({ seedVehicles: false });
-                          } catch (err) {
-                            console.error('Failed to load JSON', err);
-                          } finally {
-                            e.target.value = '';
-                          }
-                        }}
-                      />
-                    </div>
+                      {isRunning ? <Pause size={14} /> : <Play size={14} />}
+                      <span>{isRunning ? translateText('pause') : translateText('play')}</span>
+                    </button>
+                    <button
+                      onClick={handleReset}
+                      className="flex-1 flex items-center justify-center gap-2 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm font-semibold hover:border-orange-400 transition"
+                    >
+                      {translateText('reset')}
+                    </button>
                   </div>
-                  <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
-                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                      <span>Simulation speed</span>
-                      <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
-                        className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
-                      >
-                        <Minus size={14} />
-                      </button>
-                      <input
-                        type="range"
-                        min={0.25}
-                        max={4}
-                        step={0.05}
-                        value={timeScale}
-                        onChange={e => setTimeScale(parseFloat(e.target.value))}
-                        className="flex-1 min-w-0 accent-orange-500"
-                      />
-                      <button
-                        onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
-                        className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
-                      >
-                        <Plus size={14} />
-                      </button>
-                    </div>
-                  </div>
-                </div>
-
-              {toolMode === 'addEdge' && (
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
-                  <div className="text-xs uppercase tracking-wide text-orange-200/80">Add Node + Edge</div>
-                  <div className="flex items-center gap-2 text-sm">
-                    <span>Lanes</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={4}
-                      value={addToolState.lanes}
-                      onChange={e =>
-                        setAddToolState(s => ({
-                          ...s,
-                          lanes: Math.max(1, Math.min(4, Number(e.target.value) || 1)),
-                        }))
-                      }
-                      className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-2 py-1 text-sm"
-                    />
-                  </div>
-                  <div className="flex gap-2 text-xs">
-                    {(['forward', 'backward', 'bidirectional'] as const).map(dir => (
-                      <button
-                        key={dir}
-                        onClick={() => setAddToolState(s => ({ ...s, direction: dir }))}
-                        className={`flex-1 rounded-xl px-2 py-1 border transition ${
-                          addToolState.direction === dir
-                            ? 'border-orange-400 bg-orange-500/20'
-                            : 'border-orange-500/25 bg-black/60'
-                        }`}
-                      >
-                        {dir}
-                      </button>
+                  <datalist id="street-suggestions">
+                    {streetSuggestions.map(name => (
+                      <option key={name} value={name} />
                     ))}
-                  </div>
+                  </datalist>
+                  {panelOpen && (
+                    <>
+                      <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-2">
+                        <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                          <span>Statistics</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
+                            <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                              Active vehicles
+                            </div>
+                            <div className="text-lg font-semibold">{hud.vehicles}</div>
+                          </div>
+                          <div className="rounded-2xl bg-black/60 border border-orange-500/20 px-3 py-2">
+                            <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                              Traffic density
+                            </div>
+                            <div className="text-lg font-semibold">
+                              {trafficDensityPerKm !== undefined
+                                ? `${trafficDensityPerKm.toFixed(1)} veh/km`
+                                : '–'}
+                            </div>
+                          </div>
+                          <div
+                            className={`rounded-2xl px-3 py-2 border ${
+                              selectedSpeedLimitKmh
+                                ? avgSpeedKmh < selectedSpeedLimitKmh * 0.5
+                                  ? 'bg-red-500/15 border-red-400/40'
+                                  : avgSpeedKmh < selectedSpeedLimitKmh * 0.8
+                                  ? 'bg-amber-500/15 border-amber-400/40'
+                                  : 'bg-emerald-500/15 border-emerald-400/40'
+                                : 'bg-black/60 border-orange-500/20'
+                            }`}
+                          >
+                            <div className="text-[11px] uppercase tracking-wide text-orange-200/70">
+                              Average vehicle speed
+                            </div>
+                            <div className="text-lg font-semibold">
+                              {avgSpeedKmh.toFixed(1)} km/h
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </div>
-              )}
-              </div>
 
-              <div className="grid sm:grid-cols-1 gap-3">
-                <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3 transition-colors transition-shadow duration-300 hover:bg-orange-500/10 hover:border-orange-400/40 hover:shadow-[0_10px_35px_rgba(255,121,48,0.25)]">
-                  <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
-                    <span>{translateText('populationTarget')}</span>
-                    <span className="font-mono text-white">
-                      {vehicleTarget === 0
-                        ? translateText('off')
-                        : `${vehicleTarget} ${translateText('vehicles')}`}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    {POPULATION_MODES.map(mode => (
-                      <button
-                        key={mode.key}
-                        onClick={() => setVehicleTarget(mode.value)}
-                        className={`rounded-xl px-3 py-2 border text-sm transition ${
-                          vehicleTarget === mode.value
-                            ? 'border-orange-400 bg-orange-500/20 text-white'
-                            : 'border-orange-500/25 bg-black/60 text-orange-100 hover:border-orange-400'
-                        }`}
-                      >
-                        {mode.label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="text-[11px] text-orange-100/70">
-                    Make vehicle count consistent in your simulation with the following options.
-                  </p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                <button
-                  onClick={() => setShowBackdrop(v => !v)}
-                  className={`w-full rounded-full px-4 py-2 text-sm border transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] ${
-                    showBackdrop
-                      ? 'border-orange-400 bg-orange-500/20'
-                      : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                <div
+                  className={`transition-all duration-500 ${
+                    panelOpen
+                      ? 'opacity-100 translate-y-0 mt-4 space-y-4'
+                      : 'opacity-0 -translate-y-2 pointer-events-none h-0 overflow-hidden'
                   }`}
                 >
-                  {showBackdrop ? translateText('hideMap') : translateText('showMap')}
-                </button>
-                <select
-                  value={language}
-                  onChange={e => setLanguage(e.target.value as LanguageCode)}
-                  className="w-full rounded-full px-3 py-2 text-sm border border-orange-500/30 bg-gradient-to-r from-black/80 via-black/70 to-black/80 hover:border-orange-400 hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] transition text-orange-100 focus:outline-none focus:border-orange-300"
-                >
-                  <option value="en">English</option>
-                  <option value="de">Deutsch</option>
-                  <option value="es">Español</option>
-                  <option value="zh">中文</option>
-                  <option value="tr">Türkçe</option>
-                  <option value="ar">العربية</option>
-                  <option value="fa">فارسی</option>
-                </select>
-                <button
-                  onClick={() => applyZoom(1)}
-                  className="w-full rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)]"
-                >
-                  {translateText('resetZoom')}
-                </button>
-              </div>
-            </div>
+                  <div className="bg-white/5 border border-orange-500/25 rounded-2xl px-3 py-3 space-y-3">
+                    <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                      <span>Controls</span>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                        <div className="text-xs uppercase tracking-wide text-orange-200/80">Scenario</div>
+                        <select
+                          value={scenario}
+                          onChange={e => setScenario(e.target.value as ScenarioKey)}
+                          className="w-full rounded-xl bg-black/60 border border-orange-500/30 px-3 py-2 text-sm focus:outline-none focus:border-orange-400"
+                        >
+                          <option value="simple_highway">Highway with ramps</option>
+                          <option value="urban_intersection">Signalized intersection</option>
+                          <option value="roundabout">Four-arm roundabout</option>
+                          <option value="heilbronn_perchance">Heilbronn Perchance (full)</option>
+                          <option value="test_perchance">Test Perchance (full)</option>
+                          {customNetworkRef.current && (
+                            <option value="uploaded_custom">{customNetworkName}</option>
+                          )}
+                        </select>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            className="flex-1 rounded-xl bg-black/70 border border-orange-500/30 px-3 py-2 text-sm hover:border-orange-400 transition"
+                          >
+                            Import JSON
+                          </button>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".json,application/json"
+                            className="hidden"
+                            onChange={async e => {
+                              const file = e.target.files?.[0];
+                              if (!file) return;
+                              try {
+                                const text = await file.text();
+                                const parsed = JSON.parse(text);
+                                const coerced = coerceNetworkJSON(parsed);
+                                if (!coerced) {
+                                  console.warn('Uploaded file is not a valid network JSON');
+                                  return;
+                                }
+                                customNetworkRef.current = coerced;
+                                setCustomNetworkName(file.name || 'Uploaded map');
+                                setScenario('uploaded_custom');
+                                initialize({ seedVehicles: false });
+                              } catch (err) {
+                                console.error('Failed to load JSON', err);
+                              } finally {
+                                e.target.value = '';
+                              }
+                            }}
+                          />
+                        </div>
+                      </div>
+                      <div className="bg-black/60 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-3">
+                        <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                          <span>Simulation speed</span>
+                          <span className="font-mono text-white">{timeScale.toFixed(1)}x</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setTimeScale(v => Math.max(0.25, v - 0.25))}
+                            className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
+                          >
+                            <Minus size={14} />
+                          </button>
+                          <input
+                            type="range"
+                            min={0.25}
+                            max={4}
+                            step={0.05}
+                            value={timeScale}
+                            onChange={e => setTimeScale(parseFloat(e.target.value))}
+                            className="flex-1 min-w-0 accent-orange-500"
+                          />
+                          <button
+                            onClick={() => setTimeScale(v => Math.min(4, v + 0.25))}
+                            className="w-10 h-10 rounded-xl bg-black/70 border border-orange-500/30 hover:border-orange-400 transition flex items-center justify-center"
+                          >
+                            <Plus size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    {toolMode === 'addEdge' && (
+                      <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-3 py-3 space-y-2">
+                        <div className="text-xs uppercase tracking-wide text-orange-200/80">Add Node + Edge</div>
+                        <div className="flex items-center gap-2 text-sm">
+                          <span>Lanes</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={4}
+                            value={addToolState.lanes}
+                            onChange={e =>
+                              setAddToolState(s => ({
+                                ...s,
+                                lanes: Math.max(1, Math.min(4, Number(e.target.value) || 1)),
+                              }))
+                            }
+                            className="w-20 rounded-xl bg-black/60 border border-orange-500/30 px-2 py-1 text-sm"
+                          />
+                        </div>
+                        <div className="flex gap-2 text-xs">
+                          {(['forward', 'backward', 'bidirectional'] as const).map(dir => (
+                            <button
+                              key={dir}
+                              onClick={() => setAddToolState(s => ({ ...s, direction: dir }))}
+                              className={`flex-1 rounded-xl px-2 py-1 border transition ${
+                                addToolState.direction === dir
+                                  ? 'border-orange-400 bg-orange-500/20'
+                                  : 'border-orange-500/25 bg-black/60'
+                              }`}
+                            >
+                              {dir}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid sm:grid-cols-1 gap-3">
+                    <div className="bg-white/5 border border-orange-500/20 rounded-2xl px-4 py-4 space-y-3 transition-colors transition-shadow duration-300 hover:bg-orange-500/10 hover:border-orange-400/40 hover:shadow-[0_10px_35px_rgba(255,121,48,0.25)]">
+                      <div className="flex items-center justify-between text-xs uppercase tracking-wide text-orange-200/80">
+                        <span>{translateText('populationTarget')}</span>
+                        <span className="font-mono text-white">
+                          {vehicleTarget === 0
+                            ? translateText('off')
+                            : `${vehicleTarget} ${translateText('vehicles')}`}
+                        </span>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        {POPULATION_MODES.map(mode => (
+                          <button
+                            key={mode.key}
+                            onClick={() => setVehicleTarget(mode.value)}
+                            className={`rounded-xl px-3 py-2 border text-sm transition ${
+                              vehicleTarget === mode.value
+                                ? 'border-orange-400 bg-orange-500/20 text-white'
+                                : 'border-orange-500/25 bg-black/60 text-orange-100 hover:border-orange-400'
+                            }`}
+                          >
+                            {mode.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[11px] text-orange-100/70">
+                        Make vehicle count consistent in your simulation with the following options.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    <button
+                      onClick={() => setShowBackdrop(v => !v)}
+                      className={`w-full rounded-full px-4 py-2 text-sm border transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] ${
+                        showBackdrop
+                          ? 'border-orange-400 bg-orange-500/20'
+                          : 'border-orange-500/25 bg-black/60 hover:border-orange-400'
+                      }`}
+                    >
+                      {showBackdrop ? translateText('hideMap') : translateText('showMap')}
+                    </button>
+                    <select
+                      value={language}
+                      onChange={e => setLanguage(e.target.value as LanguageCode)}
+                      className="w-full rounded-full px-3 py-2 text-sm border border-orange-500/30 bg-gradient-to-r from-black/80 via-black/70 to-black/80 hover:border-orange-400 hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)] transition text-orange-100 focus:outline-none focus:border-orange-300"
+                    >
+                      <option value="en">English</option>
+                      <option value="de">Deutsch</option>
+                      <option value="es">Español</option>
+                      <option value="zh">中文</option>
+                      <option value="tr">Türkçe</option>
+                      <option value="ar">العربية</option>
+                      <option value="fa">فارسی</option>
+                    </select>
+                    <button
+                      onClick={() => applyZoom(1)}
+                      className="w-full rounded-full px-4 py-2 text-sm border border-orange-500/25 bg-black/60 hover:border-orange-400 transition shadow-sm hover:shadow-[0_10px_25px_rgba(255,121,48,0.2)]"
+                    >
+                      {translateText('resetZoom')}
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>
